@@ -221,6 +221,11 @@ def create_nerf(args):
         # if using hashed for xyz, use SH for views
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args, i=args.i_embed_views)
 
+    input_ch_time = 0
+    if args.use_time:
+        # encode time input
+        embedtime_fn, input_ch_time = get_embedder(args.multires_time, args, i=0)
+
     output_ch = 5 if args.N_importance > 0 else 4
     skips = [4]
 
@@ -230,7 +235,9 @@ def create_nerf(args):
                         geo_feat_dim=15,
                         num_layers_color=3,
                         hidden_dim_color=64,
-                        input_ch=input_ch, input_ch_views=input_ch_views).to(device)
+                        input_ch=input_ch,
+                        input_ch_views=input_ch_views,
+                        input_ch_time=input_ch_time).to(device)
     else:
         model = NeRF(D=args.netdepth, W=args.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
@@ -246,13 +253,15 @@ def create_nerf(args):
                         geo_feat_dim=15,
                         num_layers_color=3,
                         hidden_dim_color=64,
-                        input_ch=input_ch, input_ch_views=input_ch_views).to(device)
+                        input_ch=input_ch,
+                        input_ch_views=input_ch_views,
+                        input_ch_time=input_ch_time).to(device)
         else:
             model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
                           input_ch=input_ch, output_ch=output_ch, skips=skips,
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
         grad_vars += list(model_fine.parameters())
-
+    # TODO
     network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn,
                                                                 embed_fn=embed_fn,
                                                                 embeddirs_fn=embeddirs_fn,
@@ -427,7 +436,7 @@ def render_rays(ray_batch,
     viewdirs = ray_batch[:,-3:] if ray_batch.shape[-1] > 8 else None
     bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2])
     near, far = bounds[...,0], bounds[...,1] # [-1,1]
-
+    # TODO
     t_vals = torch.linspace(0., 1., steps=N_samples)
     if not lindisp:
         z_vals = near * (1.-t_vals) + far * (t_vals)
@@ -539,6 +548,8 @@ def config_parser():
                         help='set to 0. for no jitter, 1. for jitter')
     parser.add_argument("--use_viewdirs", action='store_true',
                         help='use full 5D input instead of 3D')
+    parser.add_argument("--use_time", action='store_true',
+                        help='create model with time input')
     parser.add_argument("--i_embed", type=int, default=1,
                         help='set 1 for hashed embedding, 0 for default positional encoding, 2 for spherical')
     parser.add_argument("--i_embed_views", type=int, default=2,
@@ -565,7 +576,7 @@ def config_parser():
 
     # dataset options
     parser.add_argument("--dataset_type", type=str, default='llff',
-                        help='options: llff / blender / deepvoxels')
+                        help='options: llff / blender / deepvoxels / rays')
     parser.add_argument("--testskip", type=int, default=8,
                         help='will load 1/N images from test/val sets, useful for large datasets like deepvoxels')
 
@@ -703,6 +714,9 @@ def train():
         near = hemi_R-1.
         far = hemi_R+1.
 
+    elif args.dataset_type == 'rays':
+        print('loading precomputed rays from json')
+        # TODO
     else:
         print('Unknown dataset type', args.dataset_type, 'exiting')
         return

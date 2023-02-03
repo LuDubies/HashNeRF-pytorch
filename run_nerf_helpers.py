@@ -167,11 +167,12 @@ class NeRFSmall(nn.Module):
                  num_layers_color=4,
                  hidden_dim_color=64,
                  input_ch=3, input_ch_views=3,
-                 ):
+                 input_ch_time=0):
         super(NeRFSmall, self).__init__()
 
         self.input_ch = input_ch
         self.input_ch_views = input_ch_views
+        self.input_ch_time = input_ch_time
 
         # sigma network
         self.num_layers = num_layers
@@ -198,10 +199,10 @@ class NeRFSmall(nn.Module):
         self.num_layers_color = num_layers_color        
         self.hidden_dim_color = hidden_dim_color
         
-        color_net =  []
+        color_net = []
         for l in range(num_layers_color):
             if l == 0:
-                in_dim = self.input_ch_views + self.geo_feat_dim
+                in_dim = self.input_ch_views + self.geo_feat_dim + self.input_ch_time
             else:
                 in_dim = hidden_dim
             
@@ -215,7 +216,7 @@ class NeRFSmall(nn.Module):
         self.color_net = nn.ModuleList(color_net)
     
     def forward(self, x):
-        input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
+        input_pts, input_views, input_time = torch.split(x, [self.input_ch, self.input_ch_views, self.input_ch_time], dim=-1)
 
         # sigma
         h = input_pts
@@ -227,7 +228,7 @@ class NeRFSmall(nn.Module):
         sigma, geo_feat = h[..., 0], h[..., 1:]
         
         # color
-        h = torch.cat([input_views, geo_feat], dim=-1)
+        h = torch.cat([input_views, geo_feat, input_time], dim=-1)
         for l in range(self.num_layers_color):
             h = self.color_net[l](h)
             if l != self.num_layers_color - 1:
