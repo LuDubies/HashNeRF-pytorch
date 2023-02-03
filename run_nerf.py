@@ -42,17 +42,22 @@ def batchify(fn, chunk):
     return ret
 
 
-def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
+def run_network(inputs, viewdirs, times, fn, embed_fn, embeddirs_fn, embedtimes_fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
     """
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
     embedded, keep_mask = embed_fn(inputs_flat)
 
     if viewdirs is not None:
-        input_dirs = viewdirs[:,None].expand(inputs.shape)
+        input_dirs = viewdirs[:, None].expand(inputs.shape)
         input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
         embedded_dirs = embeddirs_fn(input_dirs_flat)
         embedded = torch.cat([embedded, embedded_dirs], -1)
+
+    if times is not None:
+        input_times_flat = torch.reshape(times, [-1, times.shape[-1]])
+        embedded_times = embedtimes_fn(input_times_flat)
+        embedded = torch.cat([embedded, embedded_times], -1)
 
     outputs_flat = batchify(fn, netchunk)(embedded)
     outputs_flat[~keep_mask, -1] = 0 # set sigma to 0 for invalid points
@@ -77,7 +82,8 @@ def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
 
 def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
                   near=0., far=1.,
-                  use_viewdirs=False, c2w_staticcam=None,
+                  use_viewdirs=False, use_times=False,
+                  c2w_staticcam=None,
                   **kwargs):
     """Render rays
     Args:
@@ -222,6 +228,7 @@ def create_nerf(args):
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args, i=args.i_embed_views)
 
     input_ch_time = 0
+    embedtimes_fn = None
     if args.use_time:
         # encode time input
         embedtime_fn, input_ch_time = get_embedder(args.multires_time, args, i=0)
@@ -262,10 +269,12 @@ def create_nerf(args):
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
         grad_vars += list(model_fine.parameters())
     # TODO
-    network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn,
+    network_query_fn = lambda inputs, viewdirs, times, network_fn: run_network(inputs, viewdirs, times, network_fn,
                                                                 embed_fn=embed_fn,
                                                                 embeddirs_fn=embeddirs_fn,
+                                                                embedtimes_fn=embedtimes_fn,
                                                                 netchunk=args.netchunk)
+
 
     # Create optimizer
     if args.i_embed==1:
@@ -347,7 +356,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         depth_map: [num_rays]. Estimated distance to object.
     """
     raw2alpha = lambda raw, dists, act_fn=F.relu: 1.-torch.exp(-act_fn(raw)*dists)
-
+    # TODO
     dists = z_vals[...,1:] - z_vals[...,:-1]
     dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[...,:1].shape)], -1)  # [N_rays, N_samples]
 
@@ -412,8 +421,6 @@ def render_rays(ray_batch,
       N_samples: int. Number of different times to sample along each ray.
       retraw: bool. If True, include model's raw, unprocessed predictions.
       lindisp: bool. If True, sample linearly in inverse depth rather than in depth.
-      perturb: float, 0 or 1. If non-zero, each ray is sampled at stratified
-        random points in time.
       N_importance: int. Number of additional times to sample along each ray.
         These samples are only passed to network_fine.
       network_fine: "fine" network with same spec as network_fn.
@@ -433,37 +440,28 @@ def render_rays(ray_batch,
     """
     N_rays = ray_batch.shape[0]
     rays_o, rays_d = ray_batch[:,0:3], ray_batch[:,3:6] # [N_rays, 3] each
-    viewdirs = ray_batch[:,-3:] if ray_batch.shape[-1] > 8 else None
+    viewdirs = ray_batch[:,8:11] if ray_batch.shape[-1] > 8 else None
+    times = ray_batch[:, -1] if ray_batch.shape[-1] > 11 else None
     bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2])
     near, far = bounds[...,0], bounds[...,1] # [-1,1]
-    # TODO
     t_vals = torch.linspace(0., 1., steps=N_samples)
     if not lindisp:
         z_vals = near * (1.-t_vals) + far * (t_vals)
     else:
         z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals))
-
     z_vals = z_vals.expand([N_rays, N_samples])
 
-    if perturb > 0.:
-        # get intervals between samples
-        mids = .5 * (z_vals[...,1:] + z_vals[...,:-1])
-        upper = torch.cat([mids, z_vals[...,-1:]], -1)
-        lower = torch.cat([z_vals[...,:1], mids], -1)
-        # stratified samples in those intervals
-        t_rand = torch.rand(z_vals.shape)
+    rays_offsets = rays_d[..., None, :] * z_vals[..., :, None]
+    pt_times = None
+    if times is not None:
+        sos = 343.
+        offset_lengths = torch.linalg.norm(rays_offsets, dim=2)
+        offset_times = offset_lengths / sos
+        pt_times = times[..., None] + offset_times
 
-        # Pytest, overwrite u with numpy's fixed random numbers
-        if pytest:
-            np.random.seed(0)
-            t_rand = np.random.rand(*list(z_vals.shape))
-            t_rand = torch.Tensor(t_rand)
+    pts = rays_o[..., None, :] + rays_offsets  # [N_rays, N_samples, 3]
 
-        z_vals = lower + (upper - lower) * t_rand
-
-    pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples, 3]
-
-    raw = network_query_fn(pts, viewdirs, network_fn)
+    raw = network_query_fn(pts, viewdirs, pt_times, network_fn)
     rgb_map, disp_map, acc_map, weights, depth_map, sparsity_loss = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
 
     if N_importance > 0:
@@ -558,6 +556,8 @@ def config_parser():
                         help='log2 of max freq for positional encoding (3D location)')
     parser.add_argument("--multires_views", type=int, default=4,
                         help='log2 of max freq for positional encoding (2D direction)')
+    parser.add_argument("--multires_time", type=int, default=4,
+                        help='log2 of max freq for time encoding (1D timestep)')
     parser.add_argument("--raw_noise_std", type=float, default=0.,
                         help='std dev of noise added to regularize sigma_a output, 1e0 recommended')
 
