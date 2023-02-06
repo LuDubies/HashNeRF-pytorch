@@ -1,0 +1,16 @@
+expname = neaf
+basedir = ./logs
+datadir = ./data/neaf_synthetic
+dataset_type = neaf
+
+no_batching = True
+
+use_viewdirs = True
+use_time = True
+lrate_decay = 500
+
+N_samples = 4
+N_importance = 0
+N_rand = 4
+
+time_interval = 0.1

@@ -25,6 +25,7 @@ from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_scannet import load_scannet_data
 from load_LINEMOD import load_LINEMOD_data
+from load_neaf import load_neaf_data, build_ray_batch
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -45,9 +46,9 @@ def batchify(fn, chunk):
 def run_network(inputs, viewdirs, times, fn, embed_fn, embeddirs_fn, embedtimes_fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
     """
+    print(inputs.shape, viewdirs.shape, times.shape)
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
     embedded, keep_mask = embed_fn(inputs_flat)
-
     if viewdirs is not None:
         input_dirs = viewdirs[:, None].expand(inputs.shape)
         input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
@@ -55,10 +56,10 @@ def run_network(inputs, viewdirs, times, fn, embed_fn, embeddirs_fn, embedtimes_
         embedded = torch.cat([embedded, embedded_dirs], -1)
 
     if times is not None:
-        input_times_flat = torch.reshape(times, [-1, times.shape[-1]])
+        input_times_flat = torch.reshape(times, [-1, 1])
         embedded_times = embedtimes_fn(input_times_flat)
         embedded = torch.cat([embedded, embedded_times], -1)
-
+    print(embedded.shape)
     outputs_flat = batchify(fn, netchunk)(embedded)
     outputs_flat[~keep_mask, -1] = 0 # set sigma to 0 for invalid points
     outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
@@ -82,7 +83,7 @@ def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
 
 def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
                   near=0., far=1.,
-                  use_viewdirs=False, use_times=False,
+                  use_viewdirs=False, times=None,
                   c2w_staticcam=None,
                   **kwargs):
     """Render rays
@@ -136,6 +137,8 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
     rays = torch.cat([rays_o, rays_d, near, far], -1)
     if use_viewdirs:
         rays = torch.cat([rays, viewdirs], -1)
+    if times is not None:
+        rays = torch.cat([rays, times[:, None]], -1)
 
     # Render and reshape
     all_ret = batchify_rays(rays, chunk, **kwargs)
@@ -231,7 +234,7 @@ def create_nerf(args):
     embedtimes_fn = None
     if args.use_time:
         # encode time input
-        embedtime_fn, input_ch_time = get_embedder(args.multires_time, args, i=0)
+        embedtimes_fn, input_ch_time = get_embedder(args.multires_time, args, input_dims=1, i=0)
 
     output_ch = 5 if args.N_importance > 0 else 4
     skips = [4]
@@ -268,7 +271,7 @@ def create_nerf(args):
                           input_ch=input_ch, output_ch=output_ch, skips=skips,
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
         grad_vars += list(model_fine.parameters())
-    # TODO
+
     network_query_fn = lambda inputs, viewdirs, times, network_fn: run_network(inputs, viewdirs, times, network_fn,
                                                                 embed_fn=embed_fn,
                                                                 embeddirs_fn=embeddirs_fn,
@@ -452,15 +455,16 @@ def render_rays(ray_batch,
     z_vals = z_vals.expand([N_rays, N_samples])
 
     rays_offsets = rays_d[..., None, :] * z_vals[..., :, None]
+
     pt_times = None
     if times is not None:
         sos = 343.
         offset_lengths = torch.linalg.norm(rays_offsets, dim=2)
         offset_times = offset_lengths / sos
-        pt_times = times[..., None] + offset_times
+        pt_times = times[..., None] - offset_times  # TODO handle <0
 
     pts = rays_o[..., None, :] + rays_offsets  # [N_rays, N_samples, 3]
-
+    print(pts)
     raw = network_query_fn(pts, viewdirs, pt_times, network_fn)
     rgb_map, disp_map, acc_map, weights, depth_map, sparsity_loss = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
 
@@ -606,6 +610,14 @@ def config_parser():
     parser.add_argument("--llffhold", type=int, default=8,
                         help='will take every 1/N images as LLFF test set, paper uses 8')
 
+    ## neaf flags
+    parser.add_argument("--time_interval", type=float, default=0.1,
+                        help='time interval (in s) represented by range [0, 1]')
+    parser.add_argument("--speed_of_sound", type=float, default=343.,
+                        help='speed of sound used for neaf')
+    parser.add_argument("--neaf_timesteps", type=int, default=100,
+                        help='time discretion for neaf')
+
     # logging/saving options
     parser.add_argument("--i_print",   type=int, default=100,
                         help='frequency of console printout and metric loggin')
@@ -714,12 +726,19 @@ def train():
         near = hemi_R-1.
         far = hemi_R+1.
 
-    elif args.dataset_type == 'rays':
+    elif args.dataset_type == 'neaf':
         print('loading precomputed rays from json')
-        # TODO
+        listener_states, i_split, bounding_box = load_neaf_data(basedir=args.datadir, ray_file='rays_20230126-113857.json')
+        i_train, i_test, i_val = i_split
+        args.bounding_box = bounding_box
+        near = 0.01
+        far = 6.
     else:
         print('Unknown dataset type', args.dataset_type, 'exiting')
         return
+
+    if args.dataset_type == 'neaf':
+        hwf = 0, 0, 0
 
     # Cast intrinsics to right types
     H, W, focal = hwf
@@ -769,7 +788,6 @@ def train():
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
     global_step = start
-
     bds_dict = {
         'near' : near,
         'far' : far,
@@ -778,7 +796,8 @@ def train():
     render_kwargs_test.update(bds_dict)
 
     # Move testing data to GPU
-    render_poses = torch.Tensor(render_poses).to(device)
+    if not args.dataset_type == 'neaf':
+        render_poses = torch.Tensor(render_poses).to(device)
 
     # Short circuit if only rendering out from trained model
     if args.render_only:
@@ -821,11 +840,12 @@ def train():
         i_batch = 0
 
     # Move training data to GPU
-    if use_batching:
-        images = torch.Tensor(images).to(device)
-    poses = torch.Tensor(poses).to(device)
-    if use_batching:
-        rays_rgb = torch.Tensor(rays_rgb).to(device)
+    if not args.dataset_type == 'neaf':
+        if use_batching:
+            images = torch.Tensor(images).to(device)
+        poses = torch.Tensor(poses).to(device)
+        if use_batching:
+            rays_rgb = torch.Tensor(rays_rgb).to(device)
 
 
     N_iters = 50000 + 1
@@ -843,7 +863,7 @@ def train():
     start = start + 1
     time0 = time.time()
     for i in trange(start, N_iters):
-        # Sample random ray batch
+        # Sample random ray batch TODO
         if use_batching:
             # Random over all images
             batch = rays_rgb[i_batch:i_batch+N_rand] # [B, 2+1, 3*?]
@@ -859,38 +879,48 @@ def train():
 
         else:
             # Random from one image
-            img_i = np.random.choice(i_train)
-            target = images[img_i]
-            target = torch.Tensor(target).to(device)
-            pose = poses[img_i, :3,:4]
+            if not args.dataset_type == 'neaf':
+                img_i = np.random.choice(i_train)
+                target = images[img_i]
+                target = torch.Tensor(target).to(device)
+                pose = poses[img_i, :3,:4]
 
-            if N_rand is not None:
-                rays_o, rays_d = get_rays(H, W, K, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
+                if N_rand is not None:
+                    rays_o, rays_d = get_rays(H, W, K, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
 
-                if i < args.precrop_iters:
-                    dH = int(H//2 * args.precrop_frac)
-                    dW = int(W//2 * args.precrop_frac)
-                    coords = torch.stack(
-                        torch.meshgrid(
-                            torch.linspace(H//2 - dH, H//2 + dH - 1, 2*dH),
-                            torch.linspace(W//2 - dW, W//2 + dW - 1, 2*dW)
-                        ), -1)
-                    if i == start:
-                        print(f"[Config] Center cropping of size {2*dH} x {2*dW} is enabled until iter {args.precrop_iters}")
-                else:
-                    coords = torch.stack(torch.meshgrid(torch.linspace(0, H-1, H), torch.linspace(0, W-1, W)), -1)  # (H, W, 2)
+                    if i < args.precrop_iters:
+                        dH = int(H//2 * args.precrop_frac)
+                        dW = int(W//2 * args.precrop_frac)
+                        coords = torch.stack(
+                            torch.meshgrid(
+                                torch.linspace(H//2 - dH, H//2 + dH - 1, 2*dH),
+                                torch.linspace(W//2 - dW, W//2 + dW - 1, 2*dW)
+                            ), -1)
+                        if i == start:
+                            print(f"[Config] Center cropping of size {2*dH} x {2*dW} is enabled until iter {args.precrop_iters}")
+                    else:
+                        coords = torch.stack(torch.meshgrid(torch.linspace(0, H-1, H), torch.linspace(0, W-1, W)), -1)  # (H, W, 2)
 
-                coords = torch.reshape(coords, [-1,2])  # (H * W, 2)
-                select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=False)  # (N_rand,)
-                select_coords = coords[select_inds].long()  # (N_rand, 2)
-                rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                batch_rays = torch.stack([rays_o, rays_d], 0)
-                target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                    coords = torch.reshape(coords, [-1,2])  # (H * W, 2)
+                    select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=False)  # (N_rand,)
+                    select_coords = coords[select_inds].long()  # (N_rand, 2)
+                    rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                    rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                    batch_rays = torch.stack([rays_o, rays_d], 0)
+                    target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                    times = None
+            else:
+                # build receiver batch from precomputed rays
+                listener_i = np.random.choice(i_train)
+                batch_rays, target_s, times = build_ray_batch(listener_states[listener_i], args)
+                batch_rays = torch.Tensor(batch_rays).to(device)
+                target_s = torch.Tensor(target_s).to(device)
+                times = torch.Tensor(times).to(device)
+
 
         #####  Core optimization loop  #####
         rgb, depth, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
-                                                verbose=i < 10, retraw=True,
+                                                verbose=i < 10, retraw=True, times=times,
                                                 **render_kwargs_train)
 
         optimizer.zero_grad()
