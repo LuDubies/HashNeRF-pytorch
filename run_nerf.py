@@ -27,6 +27,8 @@ from load_scannet import load_scannet_data
 from load_LINEMOD import load_LINEMOD_data
 from load_neaf import load_neaf_data, build_ray_batch
 
+import wandb
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
@@ -46,7 +48,6 @@ def batchify(fn, chunk):
 def run_network(inputs, viewdirs, times, fn, embed_fn, embeddirs_fn, embedtimes_fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
     """
-    print(inputs.shape, viewdirs.shape, times.shape)
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
     embedded, keep_mask = embed_fn(inputs_flat)
     if viewdirs is not None:
@@ -59,7 +60,6 @@ def run_network(inputs, viewdirs, times, fn, embed_fn, embeddirs_fn, embedtimes_
         input_times_flat = torch.reshape(times, [-1, 1])
         embedded_times = embedtimes_fn(input_times_flat)
         embedded = torch.cat([embedded, embedded_times], -1)
-    print(embedded.shape)
     outputs_flat = batchify(fn, netchunk)(embedded)
     outputs_flat[~keep_mask, -1] = 0 # set sigma to 0 for invalid points
     outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
@@ -345,7 +345,7 @@ def create_nerf(args):
     return render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer
 
 
-def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False):
+def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False, neaf_mode=False):
     """Transforms model's predictions to semantically meaningful values.
     Args:
         raw: [num_rays, num_samples along ray, 4]. Prediction from model.
@@ -359,7 +359,6 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         depth_map: [num_rays]. Estimated distance to object.
     """
     raw2alpha = lambda raw, dists, act_fn=F.relu: 1.-torch.exp(-act_fn(raw)*dists)
-    # TODO
     dists = z_vals[...,1:] - z_vals[...,:-1]
     dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[...,:1].shape)], -1)  # [N_rays, N_samples]
 
@@ -379,12 +378,24 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
     # sigma_loss = sigma_sparsity_loss(raw[...,3])
     alpha = raw2alpha(raw[...,3] + noise, dists)  # [N_rays, N_samples]
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
-    weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1.-alpha + 1e-10], -1), -1)[:, :-1]
-    rgb_map = torch.sum(weights[...,None] * rgb, -2)  # [N_rays, 3]
 
-    depth_map = torch.sum(weights * z_vals, -1) / torch.sum(weights, -1)
-    disp_map = 1./torch.max(1e-10 * torch.ones_like(depth_map), depth_map)
-    acc_map = torch.sum(weights, -1)
+
+    blocking_alpha = torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1.-alpha + 1e-10], -1), -1)[:, :-1]
+    weights = alpha * blocking_alpha
+
+    if not neaf_mode:
+        rgb_map = torch.sum(weights[...,None] * rgb, -2)  # [N_rays, 3]
+        depth_map = torch.sum(weights * z_vals, -1) / torch.sum(weights, -1)
+        disp_map = 1./torch.max(1e-10 * torch.ones_like(depth_map), depth_map)
+        acc_map = torch.sum(weights, -1)
+    else:
+        # TODO reintroduce alpha
+        falloffs = 1 / (1 + dists)
+        neaf_weights = blocking_alpha * falloffs
+        rgb_map = torch.sum(neaf_weights[..., None] * rgb, -2)  # [N_rays, 3]
+        depth_map = torch.sum(weights * z_vals, -1) / torch.sum(weights, -1)
+        disp_map = 1. / torch.max(1e-10 * torch.ones_like(depth_map), depth_map)
+        acc_map = torch.sum(weights, -1)
 
     if white_bkgd:
         rgb_map = rgb_map + (1.-acc_map[...,None])
@@ -461,15 +472,16 @@ def render_rays(ray_batch,
         sos = 343.
         offset_lengths = torch.linalg.norm(rays_offsets, dim=2)
         offset_times = offset_lengths / sos
-        pt_times = times[..., None] - offset_times  # TODO handle <0
+        pt_times = times[..., None] - offset_times  # TODO handle <0 ??
 
     pts = rays_o[..., None, :] + rays_offsets  # [N_rays, N_samples, 3]
-    print(pts)
     raw = network_query_fn(pts, viewdirs, pt_times, network_fn)
-    rgb_map, disp_map, acc_map, weights, depth_map, sparsity_loss = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
+    rgb_map, disp_map, acc_map, weights, depth_map, sparsity_loss = raw2outputs(raw, z_vals, rays_d, raw_noise_std,
+                                                                                white_bkgd, pytest=pytest,
+                                                                                neaf_mode=times is not None)
 
     if N_importance > 0:
-
+        # TODO adjust fine model for neaf
         rgb_map_0, depth_map_0, acc_map_0, sparsity_loss_0 = rgb_map, depth_map, acc_map, sparsity_loss
 
         z_vals_mid = .5 * (z_vals[...,1:] + z_vals[...,:-1])
@@ -639,6 +651,9 @@ def config_parser():
     parser.add_argument("--tv-loss-weight", type=float, default=1e-6,
                         help='learning rate')
 
+    parser.add_argument("--use_wandb", action='store_true',
+                        help='upload to wandb')
+
     return parser
 
 
@@ -646,6 +661,9 @@ def train():
 
     parser = config_parser()
     args = parser.parse_args()
+
+    if args.use_wandb:
+        wandb.init(project="test-project", entity="neaf")
 
     # Load data
     K = None
@@ -853,6 +871,12 @@ def train():
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
     print('VAL views are', i_val)
+    if args.use_wandb:
+        wandb.config = {
+            "learning_rate": args.lrate,
+            "epochs": N_iters-1,
+            "batch_size": args.N_rand
+        }
 
     # Summary writers
     # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
@@ -863,7 +887,7 @@ def train():
     start = start + 1
     time0 = time.time()
     for i in trange(start, N_iters):
-        # Sample random ray batch TODO
+        # Sample random ray batch
         if use_batching:
             # Random over all images
             batch = rays_rgb[i_batch:i_batch+N_rand] # [B, 2+1, 3*?]
@@ -934,7 +958,10 @@ def train():
             loss = loss + img_loss0
             psnr0 = mse2psnr(img_loss0)
 
-        sparsity_loss = args.sparse_loss_weight*(extras["sparsity_loss"].sum() + extras["sparsity_loss0"].sum())
+        if 'sparsity_loss0' in extras:
+            sparsity_loss = args.sparse_loss_weight*(extras["sparsity_loss"].sum() + extras["sparsity_loss0"].sum())
+        else:
+            sparsity_loss = args.sparse_loss_weight*(extras["sparsity_loss"].sum())
         loss = loss + sparsity_loss
 
         # add Total Variation loss
@@ -950,6 +977,9 @@ def train():
             loss = loss + args.tv_loss_weight * TV_loss
             if i>1000:
                 args.tv_loss_weight = 0.0
+
+        if args.use_wandb:
+            wandb.log({"loss": loss})
 
         loss.backward()
         # pdb.set_trace()
@@ -1005,6 +1035,7 @@ def train():
             #     imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
 
         if i%args.i_testset==0 and i > 0:
+            # TODO fix for neaf
             testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
             os.makedirs(testsavedir, exist_ok=True)
             print('test poses shape', poses[i_test].shape)
