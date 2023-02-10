@@ -421,7 +421,8 @@ def render_rays(ray_batch,
                 white_bkgd=False,
                 raw_noise_std=0.,
                 verbose=False,
-                pytest=False):
+                pytest=False,
+                timeinterval=0.1):
     """Volumetric rendering.
     Args:
       ray_batch: array of shape [batch_size, ...]. All information necessary
@@ -473,7 +474,7 @@ def render_rays(ray_batch,
     if times is not None:
         sos = 343.
         offset_lengths = torch.linalg.norm(rays_offsets, dim=2)
-        offset_times = offset_lengths / sos
+        offset_times = offset_lengths / sos * (1 / timeinterval)
         pt_times = times[..., None] - offset_times  # TODO handle <0 ??
 
     pts = rays_o[..., None, :] + rays_offsets  # [N_rays, N_samples, 3]
@@ -483,7 +484,6 @@ def render_rays(ray_batch,
                                                                                 neaf_mode=times is not None)
 
     if N_importance > 0:
-        # TODO adjust fine model for neaf
         rgb_map_0, depth_map_0, acc_map_0, sparsity_loss_0 = rgb_map, depth_map, acc_map, sparsity_loss
 
         z_vals_mid = .5 * (z_vals[...,1:] + z_vals[...,:-1])
@@ -497,7 +497,7 @@ def render_rays(ray_batch,
         if times is not None:
             sos = 343.
             offset_lengths = torch.linalg.norm(rays_offsets, dim=2)
-            offset_times = offset_lengths / sos
+            offset_times = offset_lengths / sos * (1 / timeinterval)
             pt_times = times[..., None] - offset_times
 
         pts = rays_o[...,None,:] + rays_offsets  # [N_rays, N_samples + N_importance, 3]
@@ -824,6 +824,7 @@ def train():
     }
     render_kwargs_train.update(bds_dict)
     render_kwargs_test.update(bds_dict)
+    render_kwargs_train.update({'timeinterval': args.time_interval})
 
     # Move testing data to GPU
     if not args.dataset_type == 'neaf':

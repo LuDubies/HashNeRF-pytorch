@@ -48,12 +48,13 @@ def build_ray_batch(state, args):
         # get timing information
         sos = args.speed_of_sound
         delays = distances / sos
+        # split timeinterval into timesteps "containers"/indices
         timeinterval = args.time_interval
         timesteps = args.neaf_timesteps
         delays = torch.round(delays * (timesteps * (1 / timeinterval)))
 
         # build N_rand random receivers
-        rec_times_discrete = torch.round(rec_times * (timesteps * (1 / timeinterval)))
+        rec_times_discrete = torch.round(rec_times * timesteps)
         dots = torch.clamp(torch.einsum('rc,nc->rn', recs_d, directions), 0, 1)
         # TODO modify dots before using
         weighted_incoming = incoming[None, ...] * dots[..., None]
