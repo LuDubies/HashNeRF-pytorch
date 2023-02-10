@@ -55,18 +55,18 @@ def build_ray_batch(state, args):
 
         # build N_rand random receivers
         rec_times_discrete = torch.round(rec_times * timesteps)
-        dots = torch.clamp(torch.einsum('rc,nc->rn', recs_d, directions), 0, 1)
+        dots = torch.clamp(torch.einsum('rc,nc->rn', recs_d, directions), 0, 1)  # shape (recs, sp_rays)
         # TODO modify dots before using
-        weighted_incoming = incoming[None, ...] * dots[..., None]
+        weighted_incoming = incoming[None, ...] * dots[..., None]  # shape (recs, sp_rays, 3)
 
         # get relevant rays for each recorder time
-        relevancy = torch.eq(rec_times_discrete[:, None], delays[None, :]).float()
+        relevancy = torch.eq(rec_times_discrete[:, None], delays[None, :]).float()  # shape (recs, sp_rays)
         weighted_incoming = weighted_incoming * relevancy[:, :, None]
-        target = torch.sum(weighted_incoming, dim=1)
+        target = torch.sum(weighted_incoming, dim=1)  # shape (recs, 3)
 
     recs_o = listener_pos
     recs_o = torch.broadcast_to(recs_o, recs_d.shape)
-    recs = torch.stack((recs_o, recs_d), 0)
+    recs = torch.stack((recs_o, recs_d), 0)  # shape (2, recs, 3)
 
     return recs, target, rec_times
 
