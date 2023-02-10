@@ -463,7 +463,11 @@ def render_rays(ray_batch,
         z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals))
     z_vals = z_vals.expand([N_rays, N_samples])
 
-    rays_offsets = rays_d[..., None, :] * z_vals[..., :, None]
+    # original for dom
+    # pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
+
+    # get offsets so we can calculate offset times
+    rays_offsets = rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples + N_importance, 3]
 
     pt_times = None
     if times is not None:
@@ -487,13 +491,23 @@ def render_rays(ray_batch,
         z_samples = z_samples.detach()
 
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
-        pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples + N_importance, 3]
+        rays_offsets = rays_d[...,None,:] * z_vals[...,:,None]  # [N_rays, N_samples + N_importance, 3]
+
+        pt_times = None
+        if times is not None:
+            sos = 343.
+            offset_lengths = torch.linalg.norm(rays_offsets, dim=2)
+            offset_times = offset_lengths / sos
+            pt_times = times[..., None] - offset_times
+
+        pts = rays_o[...,None,:] + rays_offsets  # [N_rays, N_samples + N_importance, 3]
 
         run_fn = network_fn if network_fine is None else network_fine
-#         raw = run_network(pts, fn=run_fn)
-        raw = network_query_fn(pts, viewdirs, run_fn)
+        raw = network_query_fn(pts, viewdirs, pt_times, run_fn)
 
-        rgb_map, disp_map, acc_map, weights, depth_map, sparsity_loss = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
+        rgb_map, disp_map, acc_map, weights, depth_map, sparsity_loss = raw2outputs(raw, z_vals, rays_d, raw_noise_std,
+                                                                                    white_bkgd, pytest=pytest,
+                                                                                    neaf_mode=times is not None)
 
     ret = {'rgb_map' : rgb_map, 'depth_map' : depth_map, 'acc_map' : acc_map, 'sparsity_loss': sparsity_loss}
     if retraw:
