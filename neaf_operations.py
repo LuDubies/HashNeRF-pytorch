@@ -2,6 +2,7 @@ from os import path
 import json
 import numpy as np
 import torch
+import PIL.Image as im
 
 def load_neaf_data(basedir, ray_file):
     with open(path.join(basedir, ray_file), 'r') as rf:
@@ -12,16 +13,36 @@ def load_neaf_data(basedir, ray_file):
 
     listener_ids = np.arange(0, listener_count)
     np.random.shuffle(listener_ids)
-    i_split = [listener_ids[:-2*tst_cnt], listener_ids[-2*tst_cnt:-tst_cnt], listener_ids[-tst_cnt:]]
+    i_split = [listener_ids[:-tst_cnt], listener_ids[-tst_cnt:], []]
     bounding_box = (torch.tensor([-3., -3., -3.]), torch.tensor([3., 3., 3.]))
     return loaded_json["states"], i_split, bounding_box
 
 
-def build_ray_batch(state, args):
+def build_rec_batch(states, listener_ids, args, reccount=None, full_gt=False):
+    if reccount is None:
+        reccount = args.N_rand
+    if len(listener_ids) == 1:
+        # no need to build a batch from different locations
+        return get_random_receivers_for_listener(states[listener_ids[0]], reccount, args)
+    recs_per_loc = int(np.ceil(reccount / len(listener_ids)))
+    recs = []
+    targets = []
+    times = []
+    for lid in listener_ids:
+        re, ta, ti = get_random_receivers_for_listener(states[lid], recs_per_loc, args)
+        recs.append(re)
+        targets.append(ta)
+        times.append(ti)
+    recs = torch.cat(recs, dim=1)
+    targets = torch.cat(targets, dim=0)
+    times = torch.cat(times, dim=0)
 
+    return recs[:, :reccount, :], targets[:reccount, ...], times[:reccount]
+
+
+def get_random_receivers_for_listener(state, rec_count, args, full_gt=False):
     d = torch.device('cuda')
 
-    rec_count = args.N_rand
     target = torch.zeros((rec_count, 3))
     rec_times = torch.rand(rec_count)
     recs_d = torch.from_numpy(np.random.normal(size=(rec_count, 3)).astype(np.float32))
@@ -70,3 +91,10 @@ def build_ray_batch(state, args):
 
     return recs, target, rec_times
 
+
+def save_ir(irs, recs, iteration, savedir, truth=None):
+    pil_image = im.fromarray(np.uint8(irs * 255))
+    pil_image.save(path.join(savedir, f"ir_{iteration}.png"))
+    if truth is not None:
+        pil_image = im.fromarray(np.uint8(truth * 255))
+        pil_image.save(path.join(savedir, f"ir_truth.png"))

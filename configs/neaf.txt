@@ -13,4 +13,8 @@ N_samples = 64
 N_importance = 128
 N_rand = 1024
 
-time_interval = 0.1
+time_interval = 0.04
+
+i_testset = 200
+
+neaf_raydata = rays_clean_200.json

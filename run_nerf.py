@@ -25,7 +25,7 @@ from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_scannet import load_scannet_data
 from load_LINEMOD import load_LINEMOD_data
-from load_neaf import load_neaf_data, build_ray_batch
+from neaf_operations import load_neaf_data, build_rec_batch, save_ir
 
 import wandb
 
@@ -215,7 +215,25 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 
     return rgbs, depths
 
+def render_recs(recs, times, chunk, render_kwargs):
+    rgb, _, _, _ = render(0, 0, 0, rays=recs, times=times, chunk=chunk, **render_kwargs)
+    return rgb
 
+
+def render_ir(recs, timesteps, i, chunk, render_kwargs, savedir=None):
+    # need every rec at every timestep
+    rec_count = recs.shape[1]
+    time_vals = torch.linspace(0., 1., steps=timesteps)
+    time_vals = time_vals.repeat((rec_count))  # get all timesteps for every rec
+    recs_repeated = torch.repeat_interleave(recs, timesteps, dim=1)  # get every rec timestep-times
+    irs = render_recs(recs_repeated, time_vals, chunk, render_kwargs)
+    irs = irs.reshape((rec_count, timesteps, 3))
+    irs = irs.cpu().numpy()
+    # save output if savedir
+    if savedir is not None:
+        save_ir(irs, recs, i, savedir)
+
+    return irs
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
@@ -396,7 +414,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         acc_map = torch.sum(weights, -1)
 
     if white_bkgd:
-        rgb_map = rgb_map + (1.-acc_map[...,None])
+        rgb_map = rgb_map + (1.-acc_map[..., None])
 
     # Calculate weights sparsity loss
     try:
@@ -475,7 +493,7 @@ def render_rays(ray_batch,
         sos = 343.
         offset_lengths = torch.linalg.norm(rays_offsets, dim=2)
         offset_times = offset_lengths / sos * (1 / timeinterval)
-        pt_times = times[..., None] - offset_times  # TODO handle <0 ??
+        pt_times = times[..., None] - offset_times
 
     pts = rays_o[..., None, :] + rays_offsets  # [N_rays, N_samples, 3]
     raw = network_query_fn(pts, viewdirs, pt_times, network_fn)
@@ -641,6 +659,8 @@ def config_parser():
                         help='speed of sound used for neaf')
     parser.add_argument("--neaf_timesteps", type=int, default=100,
                         help='time discretion for neaf')
+    parser.add_argument("--neaf_raydata", type=str, default="rays.json",
+                        help="ray file for neaf gt")
 
     # logging/saving options
     parser.add_argument("--i_print",   type=int, default=100,
@@ -758,7 +778,7 @@ def train():
 
     elif args.dataset_type == 'neaf':
         print('loading precomputed rays from json')
-        listener_states, i_split, bounding_box = load_neaf_data(basedir=args.datadir, ray_file='rays_20230126-113857.json')
+        listener_states, i_split, bounding_box = load_neaf_data(basedir=args.datadir, ray_file=args.neaf_raydata)
         i_train, i_test, i_val = i_split
         args.bounding_box = bounding_box
         near = 0.01
@@ -819,16 +839,21 @@ def train():
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
     global_step = start
     bds_dict = {
-        'near' : near,
-        'far' : far,
+        'near': near,
+        'far': far,
     }
     render_kwargs_train.update(bds_dict)
     render_kwargs_test.update(bds_dict)
     render_kwargs_train.update({'timeinterval': args.time_interval})
+    render_kwargs_test.update({'timeinterval': args.time_interval})
 
     # Move testing data to GPU
     if not args.dataset_type == 'neaf':
         render_poses = torch.Tensor(render_poses).to(device)
+
+    # get permanent recs for testing
+    if args.dataset_type == 'neaf':
+        perm_test_recs, _, _ = build_rec_batch(listener_states, i_test, args, reccount=50)
 
     # Short circuit if only rendering out from trained model
     if args.render_only:
@@ -854,7 +879,7 @@ def train():
     # Prepare raybatch tensor if batching random rays
     N_rand = args.N_rand
     use_batching = not args.no_batching
-    if use_batching:
+    if use_batching and args.dataset_type != 'neaf':
         # For random ray batching
         print('get rays')
         rays = np.stack([get_rays_np(H, W, K, p) for p in poses[:,:3,:4]], 0) # [N, ro+rd, H, W, 3]
@@ -878,8 +903,8 @@ def train():
         if use_batching:
             rays_rgb = torch.Tensor(rays_rgb).to(device)
 
-
-    N_iters = 50000 + 1
+    N_iters = 10000 + 1
+    # N_iters = 50000 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -902,18 +927,22 @@ def train():
     for i in trange(start, N_iters):
         # Sample random ray batch
         if use_batching:
-            # Random over all images
-            batch = rays_rgb[i_batch:i_batch+N_rand] # [B, 2+1, 3*?]
-            batch = torch.transpose(batch, 0, 1)
-            batch_rays, target_s = batch[:2], batch[2]
+            if not args.dataset_type == 'neaf':
+                # Random over all images
+                batch = rays_rgb[i_batch:i_batch+N_rand] # [B, 2+1, 3*?]
+                batch = torch.transpose(batch, 0, 1)
+                batch_rays, target_s = batch[:2], batch[2]
 
-            i_batch += N_rand
-            if i_batch >= rays_rgb.shape[0]:
-                print("Shuffle data after an epoch!")
-                rand_idx = torch.randperm(rays_rgb.shape[0])
-                rays_rgb = rays_rgb[rand_idx]
-                i_batch = 0
-
+                i_batch += N_rand
+                if i_batch >= rays_rgb.shape[0]:
+                    print("Shuffle data after an epoch!")
+                    rand_idx = torch.randperm(rays_rgb.shape[0])
+                    rays_rgb = rays_rgb[rand_idx]
+                    i_batch = 0
+                    times = None
+            else:
+                np.random.shuffle(i_train)
+                batch_rays, target_s, times = build_rec_batch(listener_states, i_train, args)
         else:
             # Random from one image
             if not args.dataset_type == 'neaf':
@@ -948,12 +977,8 @@ def train():
                     times = None
             else:
                 # build receiver batch from precomputed rays
-                listener_i = np.random.choice(i_train)
-                batch_rays, target_s, times = build_ray_batch(listener_states[listener_i], args)
-                batch_rays = torch.Tensor(batch_rays).to(device)
-                target_s = torch.Tensor(target_s).to(device)
-                times = torch.Tensor(times).to(device)
-
+                listener_i = np.random.choice(i_train, (1,))
+                batch_rays, target_s, times = build_rec_batch(listener_states, listener_i, args)
 
         #####  Core optimization loop  #####
         rgb, depth, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
@@ -1031,7 +1056,7 @@ def train():
                 }, path)
             print('Saved checkpoints at', path)
 
-        if i%args.i_video==0 and i > 0:
+        if i%args.i_video==0 and i > 0 and args.dataset_type != 'neaf':
             # Turn on testing mode
             with torch.no_grad():
                 rgbs, disps = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test)
@@ -1048,13 +1073,34 @@ def train():
             #     imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
 
         if i%args.i_testset==0 and i > 0:
-            # TODO fix for neaf
-            testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
-            os.makedirs(testsavedir, exist_ok=True)
-            print('test poses shape', poses[i_test].shape)
-            with torch.no_grad():
-                render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test, gt_imgs=images[i_test], savedir=testsavedir)
-            print('Saved test set')
+            if args.dataset_type == 'neaf':
+                irtestdir = os.path.join(basedir, expname, 'ir_tests')
+                os.makedirs(irtestdir, exist_ok=True)
+                # get loss and ir for testset receivers
+                # compare vals for test receivers
+                np.random.shuffle(i_test)
+                with torch.no_grad():
+                    recs, test_targets, times = build_rec_batch(listener_states, i_test, args, reccount=1024)
+                    test_rgbs = render_recs(recs, times, args.chunk, render_kwargs_test)
+                    img_loss_test = img2mse(test_rgbs, test_targets)
+                    psnr_test = mse2psnr(img_loss_test)
+                    tqdm.write(f"[TEST] Iter: {i} Recs: 1024 Loss: {img_loss_test.item()}  PSNR: {psnr_test.item()}")
+
+                with torch.no_grad():
+                    # build irs for small random batch ?
+                    # care this will only ever use target 1, shuffle target instead of ray batches is prob best
+
+                    # get ir for known location
+                    fixed_recs = torch.from_numpy(np.asarray([[[0., -1., 0.]], [[0., 1., 0.]]]))
+                    irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test, savedir=irtestdir)
+
+            else:
+                testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
+                os.makedirs(testsavedir, exist_ok=True)
+                print('test poses shape', poses[i_test].shape)
+                with torch.no_grad():
+                    render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test, gt_imgs=images[i_test], savedir=testsavedir)
+                print('Saved test set')
 
 
 

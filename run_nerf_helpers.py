@@ -209,7 +209,7 @@ class NeRFSmall(nn.Module):
                 in_dim = hidden_dim
             
             if l == num_layers_color - 1:
-                out_dim = 3 # 3 rgb
+                out_dim = 3  # 3 rgb
             else:
                 out_dim = hidden_dim
             
@@ -241,7 +241,6 @@ class NeRFSmall(nn.Module):
         outputs = torch.cat([color, sigma.unsqueeze(dim=-1)], -1)
 
         return outputs
-
 
 
 # Ray helpers
