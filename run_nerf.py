@@ -25,7 +25,7 @@ from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_scannet import load_scannet_data
 from load_LINEMOD import load_LINEMOD_data
-from neaf_operations import load_neaf_data, build_rec_batch, save_ir
+from neaf_operations import load_neaf_data, build_neaf_batch, save_ir
 
 import wandb
 
@@ -220,7 +220,7 @@ def render_recs(recs, times, chunk, render_kwargs):
     return rgb
 
 
-def render_ir(recs, timesteps, i, chunk, render_kwargs, savedir=None):
+def render_ir(recs, timesteps, i, chunk, render_kwargs, savedir=None, truth=None):
     # need every rec at every timestep
     rec_count = recs.shape[1]
     time_vals = torch.linspace(0., 1., steps=timesteps)
@@ -231,7 +231,7 @@ def render_ir(recs, timesteps, i, chunk, render_kwargs, savedir=None):
     irs = irs.cpu().numpy()
     # save output if savedir
     if savedir is not None:
-        save_ir(irs, recs, i, savedir)
+        save_ir(irs, recs, f"ir_{i}.png", savedir)
 
     return irs
 def create_nerf(args):
@@ -661,6 +661,8 @@ def config_parser():
                         help='time discretion for neaf')
     parser.add_argument("--neaf_raydata", type=str, default="rays.json",
                         help="ray file for neaf gt")
+    parser.add_argument("--angle_exp", type=float, default=10,
+                        help="exponent applied to dot product when calculating receivers")
 
     # logging/saving options
     parser.add_argument("--i_print",   type=int, default=100,
@@ -685,6 +687,8 @@ def config_parser():
 
     parser.add_argument("--use_wandb", action='store_true',
                         help='upload to wandb')
+    parser.add_argument("--bootstrap_only", action='store_true',
+                        help='kill process before training iteration')
 
     return parser
 
@@ -853,10 +857,14 @@ def train():
 
     # get permanent recs for testing
     if args.dataset_type == 'neaf':
-        perm_test_recs, _, _ = build_rec_batch(listener_states, i_test, args, reccount=50)
+        irtestdir = os.path.join(basedir, expname, 'ir_tests')
+        os.makedirs(irtestdir, exist_ok=True)
+        perm_test_recs, ir_gt = build_neaf_batch(listener_states, i_test, args, reccount=50, mode='ir')
+        save_ir(ir_gt, None, 'ir_groundt.png', savedir=irtestdir)
 
     # Short circuit if only rendering out from trained model
     if args.render_only:
+        # TODO for neaf
         print('RENDER ONLY')
         with torch.no_grad():
             if args.render_test:
@@ -903,7 +911,7 @@ def train():
         if use_batching:
             rays_rgb = torch.Tensor(rays_rgb).to(device)
 
-    N_iters = 10000 + 1
+    N_iters = 50000 + 1
     # N_iters = 50000 + 1
     print('Begin')
     print('TRAIN views are', i_train)
@@ -915,6 +923,10 @@ def train():
             "epochs": N_iters-1,
             "batch_size": args.N_rand
         }
+
+    if args.bootstrap_only:
+        print("Exiting because bootstrap only flag was set!")
+        quit()
 
     # Summary writers
     # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
@@ -942,7 +954,7 @@ def train():
                     times = None
             else:
                 np.random.shuffle(i_train)
-                batch_rays, target_s, times = build_rec_batch(listener_states, i_train, args)
+                batch_rays, target_s, times = build_neaf_batch(listener_states, i_train, args)
         else:
             # Random from one image
             if not args.dataset_type == 'neaf':
@@ -978,7 +990,8 @@ def train():
             else:
                 # build receiver batch from precomputed rays
                 listener_i = np.random.choice(i_train, (1,))
-                batch_rays, target_s, times = build_rec_batch(listener_states, listener_i, args)
+                batch_rays, target_s, times = build_neaf_batch(listener_states, listener_i, args)
+
 
         #####  Core optimization loop  #####
         rgb, depth, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
@@ -1074,13 +1087,11 @@ def train():
 
         if i%args.i_testset==0 and i > 0:
             if args.dataset_type == 'neaf':
-                irtestdir = os.path.join(basedir, expname, 'ir_tests')
-                os.makedirs(irtestdir, exist_ok=True)
                 # get loss and ir for testset receivers
                 # compare vals for test receivers
                 np.random.shuffle(i_test)
                 with torch.no_grad():
-                    recs, test_targets, times = build_rec_batch(listener_states, i_test, args, reccount=1024)
+                    recs, test_targets, times = build_neaf_batch(listener_states, i_test, args, reccount=1024)
                     test_rgbs = render_recs(recs, times, args.chunk, render_kwargs_test)
                     img_loss_test = img2mse(test_rgbs, test_targets)
                     psnr_test = mse2psnr(img_loss_test)
@@ -1092,7 +1103,8 @@ def train():
 
                     # get ir for known location
                     fixed_recs = torch.from_numpy(np.asarray([[[0., -1., 0.]], [[0., 1., 0.]]]))
-                    irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test, savedir=irtestdir)
+                    irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test,
+                                    savedir=irtestdir, truth=ir_gt)
 
             else:
                 testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))

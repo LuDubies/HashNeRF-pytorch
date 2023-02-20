@@ -1,0 +1,60 @@
+{
+    "os": "Windows-10-10.0.19044-SP0",
+    "python": "3.10.6",
+    "heartbeatAt": "2023-02-15T12:22:00.809178",
+    "startedAt": "2023-02-15T12:22:00.162806",
+    "docker": null,
+    "cuda": null,
+    "args": [
+        "--config",
+        "configs/neaf.txt",
+        "--log2_hashmap_size",
+        "19",
+        "--lrate",
+        "0.01",
+        "--lrate_decay",
+        "10",
+        "--use_wandb"
+    ],
+    "state": "running",
+    "program": "C:\\Users\\lucad\\Repos\\HashNeRF-pytorch\\run_nerf.py",
+    "codePath": "run_nerf.py",
+    "git": {
+        "remote": "git@github.com:LuDubies/HashNeRF-pytorch.git",
+        "commit": "cc7f7c03883b88e569434580b9e28f05d5877c82"
+    },
+    "email": "luca@noelscher.com",
+    "root": "C:/Users/lucad/Repos/HashNeRF-pytorch",
+    "host": "DESKTOP-C6BCUQA",
+    "username": "lucad",
+    "executable": "C:\\Users\\lucad\\Repos\\HashNeRF-pytorch\\venv\\Scripts\\python.exe",
+    "cpu_count": 4,
+    "cpu_count_logical": 4,
+    "cpu_freq": {
+        "current": 3504.0,
+        "min": 0.0,
+        "max": 3504.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 3504.0,
+            "min": 0.0,
+            "max": 3504.0
+        }
+    ],
+    "disk": {
+        "total": 223.02153396606445,
+        "used": 205.0358428955078
+    },
+    "gpu": "NVIDIA GeForce GTX 1080",
+    "gpu_count": 1,
+    "gpu_devices": [
+        {
+            "name": "NVIDIA GeForce GTX 1080",
+            "memory_total": 8589934592
+        }
+    ],
+    "memory": {
+        "total": 31.963367462158203
+    }
+}
