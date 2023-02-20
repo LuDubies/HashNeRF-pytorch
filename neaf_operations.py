@@ -5,7 +5,7 @@ import torch
 import PIL.Image as im
 
 
-from ir_visualization import cgrade_ir
+from ir_visualization import cgrade_ir, error_plot
 
 def load_neaf_data(basedir, ray_file):
     with open(path.join(basedir, ray_file), 'r') as rf:
@@ -177,9 +177,10 @@ def calculate_incoming_impulse(receiver_directions, ray_directions, incoming, ar
     return incoming[None, ...] * dots[..., None]  # shape (recs, sp_rays, 3)
 
 
-def save_ir(irs, recs, filename, savedir):
-    cgrade_ir(irs, path.join(savedir, 'cg_' + filename))
-    pil_image = im.fromarray(np.uint8(irs * 255))
-    pil_image.save(path.join(savedir, filename))
+def save_ir(irs, recs, filename, savedir, truth=None):
+    cgrade_ir(irs, path.join(savedir, filename))
+    if truth is not None:
+        error_plot(truth, irs, path.join(savedir, 'error_' + filename))
+
 
 

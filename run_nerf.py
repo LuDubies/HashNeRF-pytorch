@@ -231,7 +231,7 @@ def render_ir(recs, timesteps, i, chunk, render_kwargs, savedir=None, truth=None
     irs = irs.cpu().numpy()
     # save output if savedir
     if savedir is not None:
-        save_ir(irs, recs, f"ir_{i}.png", savedir)
+        save_ir(irs, recs, f"ir_{i}.png", savedir, truth=truth)
 
     return irs
 def create_nerf(args):
@@ -1098,11 +1098,6 @@ def train():
                     tqdm.write(f"[TEST] Iter: {i} Recs: 1024 Loss: {img_loss_test.item()}  PSNR: {psnr_test.item()}")
 
                 with torch.no_grad():
-                    # build irs for small random batch ?
-                    # care this will only ever use target 1, shuffle target instead of ray batches is prob best
-
-                    # get ir for known location
-                    fixed_recs = torch.from_numpy(np.asarray([[[0., -1., 0.]], [[0., 1., 0.]]]))
                     irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test,
                                     savedir=irtestdir, truth=ir_gt)
 
