@@ -15,9 +15,14 @@ N_rand = 2048
 
 time_interval = 0.05
 multires_time = 6
+angle_exp = 1
 
 i_testset = 250
 
 neaf_raydata = rays_clean_200.json
 
 tv-loss-weight = 0
+
+log2_hashmap_size = 19
+lrate = 0.01
+lrate_decay = 10
