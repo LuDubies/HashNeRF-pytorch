@@ -220,7 +220,7 @@ def render_recs(recs, times, chunk, render_kwargs):
     return rgb
 
 
-def render_ir(recs, timesteps, i, chunk, render_kwargs, savedir=None, truth=None):
+def render_ir(recs, timesteps, i, chunk, render_kwargs, savedir=None, truth=None, upload=False):
     # need every rec at every timestep
     rec_count = recs.shape[1]
     time_vals = torch.linspace(0., 1., steps=timesteps)
@@ -231,7 +231,7 @@ def render_ir(recs, timesteps, i, chunk, render_kwargs, savedir=None, truth=None
     irs = irs.cpu().numpy()
     # save output if savedir
     if savedir is not None:
-        save_ir(irs, recs, f"ir_{i}.png", savedir, truth=truth)
+        save_ir(irs, recs, f"ir_{i}.png", savedir, truth=truth, upload=upload)
 
     return irs
 def create_nerf(args):
@@ -698,9 +698,6 @@ def train():
     parser = config_parser()
     args = parser.parse_args()
 
-    if args.use_wandb:
-        wandb.init(project="test-project", entity="neaf")
-
     # Load data
     K = None
     if args.dataset_type == 'llff':
@@ -825,7 +822,7 @@ def train():
     if args.sparse_loss_weight > 0:
         args.expname += "_sparse" + str(args.sparse_loss_weight)
     args.expname += "_TV" + str(args.tv_loss_weight)
-    #args.expname += datetime.now().strftime('_%H_%M_%d_%m_%Y')
+    args.expname += datetime.now().strftime('_%H_%M_%d_%m_%Y')
     expname = args.expname
 
     os.makedirs(os.path.join(basedir, expname), exist_ok=True)
@@ -838,6 +835,17 @@ def train():
         f = os.path.join(basedir, expname, 'config.txt')
         with open(f, 'w') as file:
             file.write(open(args.config, 'r').read())
+
+    # wandb init
+    if args.use_wandb:
+        config = {
+            "learning_rate": args.lrate,
+            "batch_size": args.N_rand,
+            "timesteps": args.neaf_timesteps,
+            "time_encoding": args.multires_time,
+            "angle_exponent": args.angle_exp,
+        }
+        wandb.init(project="neaf_optimization", entity="neaf", config=config)
 
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
@@ -860,7 +868,7 @@ def train():
         irtestdir = os.path.join(basedir, expname, 'ir_tests')
         os.makedirs(irtestdir, exist_ok=True)
         perm_test_recs, ir_gt = build_neaf_batch(listener_states, i_test, args, reccount=50, mode='ir')
-        save_ir(ir_gt, None, 'ir_groundt.png', savedir=irtestdir)
+        save_ir(ir_gt, None, 'ir_groundt.png', savedir=irtestdir, upload=args.use_wandb)
 
     # Short circuit if only rendering out from trained model
     if args.render_only:
@@ -911,18 +919,15 @@ def train():
         if use_batching:
             rays_rgb = torch.Tensor(rays_rgb).to(device)
 
-    N_iters = 50000 + 1
+    N_iters = 30000 + 1
     # N_iters = 50000 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
     print('VAL views are', i_val)
+
     if args.use_wandb:
-        wandb.config = {
-            "learning_rate": args.lrate,
-            "epochs": N_iters-1,
-            "batch_size": args.N_rand
-        }
+        wandb.config.update({"epochs": N_iters - 1})
 
     if args.bootstrap_only:
         print("Exiting because bootstrap only flag was set!")
@@ -1096,10 +1101,12 @@ def train():
                     img_loss_test = img2mse(test_rgbs, test_targets)
                     psnr_test = mse2psnr(img_loss_test)
                     tqdm.write(f"[TEST] Iter: {i} Recs: 1024 Loss: {img_loss_test.item()}  PSNR: {psnr_test.item()}")
-
+                    if args.use_wandb:
+                        wandb.log({"test_loss": img_loss_test})
+                        wandb.log({"test_psnr": psnr_test})
                 with torch.no_grad():
                     irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test,
-                                    savedir=irtestdir, truth=ir_gt)
+                                    savedir=irtestdir, truth=ir_gt, upload=args.use_wandb)
 
             else:
                 testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))

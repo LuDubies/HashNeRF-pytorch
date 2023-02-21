@@ -19,3 +19,5 @@ multires_time = 6
 i_testset = 250
 
 neaf_raydata = rays_clean_200.json
+
+tv-loss-weight = 0
