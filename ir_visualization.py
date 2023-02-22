@@ -14,9 +14,17 @@ def cgrade_ir(ir, filename, channel=1, upload=False):
 
 def error_plot(target, prediction, filename, channel=1, upload=False):
     error = np.abs(target - prediction)
-    error = np.uint8(255*error[:, :, channel])
-    plt.imshow(error, cmap='hot', vmin=0, vmax=255)
+    errorpic = np.uint8(255*error[:, :, channel])
+    plt.imshow(errorpic, cmap='hot', vmin=0, vmax=255)
     plt.savefig(filename)
+    mse2psnr = lambda x: -10. * np.log(x) / np.log(10.)
     if upload:
-        wandb.log({"error": wandb.Image(filename)})
+        mask = np.greater(target, 0)
+        fnerr = np.mean((error * mask) ** 2)
+        fperr = np.mean((error * np.invert(mask)))
+        wandb.log({"error": wandb.Image(filename),
+                   "gtp_error": fnerr,
+                   "gtp_psnr": mse2psnr(fnerr),
+                   "gtn_error": fperr,
+                   "gtn_psnr": mse2psnr(fperr)})
 
