@@ -2,7 +2,6 @@ from os import path
 import json
 import numpy as np
 import torch
-import PIL.Image as im
 
 
 from ir_visualization import cgrade_ir, error_plot
@@ -25,7 +24,7 @@ def build_neaf_batch(states, listener_ids, args, reccount=None, mode='rec', dire
     if reccount is None:
         reccount = args.N_rand
     if directions is None:
-        recs_d = get_random_directions(reccount)
+        recs_d = get_random_directions(reccount).to(torch.device('cuda'))
     else:
         recs_d = directions
     if mode == 'rec':
@@ -141,7 +140,7 @@ def get_random_ir_for_listener(state, rec_count, recs_d, args):
 def get_random_directions(count):
     directions = torch.from_numpy(np.random.normal(size=(count, 3)).astype(np.float32))
     directions = directions / torch.linalg.norm(directions, axis=1, keepdims=True)
-    return torch.Tensor(directions).to(torch.device('cuda'))
+    return torch.Tensor(directions)
 
 def load_data_for_state(state):
     listener_pos = torch.Tensor(state['listener']['matrix'][:3])
