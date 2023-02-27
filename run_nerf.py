@@ -25,7 +25,9 @@ from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_scannet import load_scannet_data
 from load_LINEMOD import load_LINEMOD_data
-from neaf_operations import load_neaf_data, build_neaf_batch, save_ir
+from neaf_operations import save_ir, check_neaf_dataset, build_neaf_batch, load_neaf_data
+from neaf_dataloader import NeafDataset
+from torch.utils.data import DataLoader
 
 import wandb
 
@@ -779,9 +781,19 @@ def train():
 
     elif args.dataset_type == 'neaf':
         print('loading precomputed rays from json')
-        listener_states, i_split, bounding_box = load_neaf_data(basedir=args.datadir, ray_file=args.neaf_raydata)
+        listener_count = check_neaf_dataset(basedir=args.datadir, ray_file=args.neaf_raydata)
+        tst_cnt = listener_count // 10
+        listener_ids = np.arange(0, listener_count)
+        np.random.shuffle(listener_ids)
+        i_split = [listener_ids[:-tst_cnt], listener_ids[-tst_cnt:], []]
         i_train, i_test, i_val = i_split
-        args.bounding_box = bounding_box
+        args.bounding_box = (torch.tensor([-3., -3., -3.]), torch.tensor([3., 3., 3.]))
+        training_data = NeafDataset(args.datadir, args.neaf_raydata, args.N_rand, i_train, args)
+        test_data = NeafDataset(args.datadir, args.neaf_raydata, 1024, i_test, args)
+        train_dataloader = DataLoader(training_data, batch_size=None, shuffle=True, num_workers=1, persistent_workers=True)
+        test_dataloader = DataLoader(test_data, batch_size=None, shuffle=True, num_workers=1, persistent_workers=True)
+        train_gen = iter(train_dataloader)
+        test_gen = iter(test_dataloader)
         near = 0.01
         far = 6.
     else:
@@ -867,6 +879,7 @@ def train():
     if args.dataset_type == 'neaf':
         irtestdir = os.path.join(basedir, expname, 'ir_tests')
         os.makedirs(irtestdir, exist_ok=True)
+        listener_states, _, _ = load_neaf_data(args.datadir, args.neaf_raydata)
         perm_test_recs, ir_gt = build_neaf_batch(listener_states, i_test, args, reccount=50, mode='ir')
         save_ir(ir_gt, None, 'ir_groundt.png', savedir=irtestdir, upload=args.use_wandb)
 
@@ -958,8 +971,11 @@ def train():
                     i_batch = 0
                     times = None
             else:
-                np.random.shuffle(i_train)
-                batch_rays, target_s, times = build_neaf_batch(listener_states, i_train, args)
+                try:
+                    batch_rays, target_s, times = next(train_gen)
+                except StopIteration:
+                    train_gen = iter(train_dataloader)
+                    batch_rays, target_s, times = next(train_gen) # TODO we can actually build batches now, do so
         else:
             # Random from one image
             if not args.dataset_type == 'neaf':
@@ -994,8 +1010,11 @@ def train():
                     times = None
             else:
                 # build receiver batch from precomputed rays
-                listener_i = np.random.choice(i_train, (1,))
-                batch_rays, target_s, times = build_neaf_batch(listener_states, listener_i, args)
+                try:
+                    batch_rays, target_s, times = next(train_gen)
+                except StopIteration:
+                    train_gen = iter(train_dataloader)
+                    batch_rays, target_s, times = next(train_gen)
 
 
         #####  Core optimization loop  #####
@@ -1096,7 +1115,11 @@ def train():
                 # compare vals for test receivers
                 np.random.shuffle(i_test)
                 with torch.no_grad():
-                    recs, test_targets, times = build_neaf_batch(listener_states, i_test, args, reccount=1024)
+                    try:
+                        recs, test_targets, times = next(test_gen)
+                    except StopIteration:
+                        train_gen = iter(test_dataloader)
+                        recs, test_targets, times = next(test_gen)
                     test_rgbs = render_recs(recs, times, args.chunk, render_kwargs_test)
                     img_loss_test = img2mse(test_rgbs, test_targets)
                     psnr_test = mse2psnr(img_loss_test)

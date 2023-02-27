@@ -15,14 +15,14 @@ def use_cpu_tensor(func):
     return wrapper
 
 class NeafDataset(Dataset):
-
-    def __init__(self, basedir, rayfile, batchsize, clargs):
+    def __init__(self, basedir, rayfile, batchsize, lids, clargs):
         super().__init__()
         with open(path.join(basedir, rayfile), 'r') as rf:
             loaded_json = json.load(rf)
         self.data = loaded_json
         self.states = loaded_json['states']
-        self.listener_count = len(self.states)
+        self.lids = lids
+        self.listener_count = len(self.lids)
 
         self.batchsize = batchsize
         self.clargs = clargs
@@ -34,7 +34,8 @@ class NeafDataset(Dataset):
     def __getitem__(self, idx):
         np.random.seed(idx)  # TODO make optional? flag?
         recs_d = get_random_directions(self.batchsize)
-        recs, targets, times = get_random_receivers_for_listener(self.states[idx], self.batchsize, recs_d, self.clargs)
+        lid = self.lids[idx]
+        recs, targets, times = get_random_receivers_for_listener(self.states[lid], self.batchsize, recs_d, self.clargs)
         return recs, targets, times
 
 

@@ -6,6 +6,12 @@ import torch
 
 from ir_visualization import cgrade_ir, error_plot
 
+
+def check_neaf_dataset(basedir, ray_file):
+    with open(path.join(basedir, ray_file), 'r') as rf:
+        loaded_json = json.load(rf)
+
+    return len(loaded_json["states"])
 def load_neaf_data(basedir, ray_file):
     with open(path.join(basedir, ray_file), 'r') as rf:
         loaded_json = json.load(rf)
