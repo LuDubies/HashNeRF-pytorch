@@ -25,7 +25,8 @@ from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_scannet import load_scannet_data
 from load_LINEMOD import load_LINEMOD_data
-from neaf_operations import load_neaf_data, build_neaf_batch, save_ir
+from neaf_operations import load_neaf_data, build_neaf_batch
+from ir_visualization import save_ir
 
 import wandb
 
@@ -220,7 +221,7 @@ def render_recs(recs, times, chunk, render_kwargs):
     return rgb
 
 
-def render_ir(recs, timesteps, i, chunk, render_kwargs, savedir=None, truth=None, upload=False):
+def render_ir(recs, timesteps, i, chunk, render_kwargs):
     # need every rec at every timestep
     rec_count = recs.shape[1]
     time_vals = torch.linspace(0., 1., steps=timesteps)
@@ -229,10 +230,6 @@ def render_ir(recs, timesteps, i, chunk, render_kwargs, savedir=None, truth=None
     irs = render_recs(recs_repeated, time_vals, chunk, render_kwargs)
     irs = irs.reshape((rec_count, timesteps, 3))
     irs = irs.cpu().numpy()
-    # save output if savedir
-    if savedir is not None:
-        save_ir(irs, recs, f"ir_{i}.png", savedir, truth=truth, upload=upload)
-
     return irs
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
@@ -864,11 +861,12 @@ def train():
         render_poses = torch.Tensor(render_poses).to(device)
 
     # get permanent recs for testing
+    gt_log_dict = None
     if args.dataset_type == 'neaf':
         irtestdir = os.path.join(basedir, expname, 'ir_tests')
         os.makedirs(irtestdir, exist_ok=True)
         perm_test_recs, ir_gt = build_neaf_batch(listener_states, i_test, args, reccount=50, mode='ir')
-        save_ir(ir_gt, None, 'ir_groundt.png', savedir=irtestdir, upload=args.use_wandb)
+        gt_log_dict = save_ir(ir_gt, None, 'ir_groundt.png', savedir=irtestdir)
 
     # Short circuit if only rendering out from trained model
     if args.render_only:
@@ -889,7 +887,6 @@ def train():
             rgbs, _ = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test, gt_imgs=images, savedir=testsavedir, render_factor=args.render_factor)
             print('Done rendering', testsavedir)
             imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
-
             return
 
     # Prepare raybatch tensor if batching random rays
@@ -1034,8 +1031,7 @@ def train():
             if i>1000:
                 args.tv_loss_weight = 0.0
 
-        if args.use_wandb:
-            wandb.log({"loss": loss})
+        log_dict = {"loss": loss}
 
         loss.backward()
         # pdb.set_trace()
@@ -1105,8 +1101,9 @@ def train():
                         wandb.log({"test_loss": img_loss_test})
                         wandb.log({"test_psnr": psnr_test})
                 with torch.no_grad():
-                    irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test,
-                                    savedir=irtestdir, truth=ir_gt, upload=args.use_wandb)
+                    irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test)
+                    extra_log_dict = save_ir(irs, perm_test_recs, f"ir_{i}.png", irtestdir, truth=ir_gt)
+                    log_dict.update(extra_log_dict)
 
             else:
                 testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
@@ -1116,7 +1113,12 @@ def train():
                     render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test, gt_imgs=images[i_test], savedir=testsavedir)
                 print('Saved test set')
 
-
+        # log to wandb
+        if args.use_wandb:
+            if gt_log_dict is not None:
+                log_dict.update({'ir_gt': gt_log_dict['ir']})
+                gt_log_dict = None
+            wandb.log(log_dict)
 
         if i%args.i_print==0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")

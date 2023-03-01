@@ -176,10 +176,7 @@ def calculate_incoming_impulse(receiver_directions, ray_directions, incoming, ar
     return incoming[None, ...] * dots[..., None]  # shape (recs, sp_rays, 3)
 
 
-def save_ir(irs, recs, filename, savedir, truth=None, upload=False):
-    cgrade_ir(irs, path.join(savedir, filename), upload=upload)
-    if truth is not None:
-        error_plot(truth, irs, path.join(savedir, 'error_' + filename), upload=upload)
+
 
 
 
