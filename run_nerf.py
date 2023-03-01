@@ -684,6 +684,8 @@ def config_parser():
 
     parser.add_argument("--use_wandb", action='store_true',
                         help='upload to wandb')
+    parser.add_argument("--wandb_project_name", type=str, default="neaf_optimization",
+                        help='project name for wandb')
     parser.add_argument("--bootstrap_only", action='store_true',
                         help='kill process before training iteration')
 
@@ -842,7 +844,7 @@ def train():
             "time_encoding": args.multires_time,
             "angle_exponent": args.angle_exp,
         }
-        wandb.init(project="neaf_optimization", entity="neaf", config=config)
+        wandb.init(project=args.wandb_project_name, entity="neaf", config=config)
 
     # Create nerf model
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
