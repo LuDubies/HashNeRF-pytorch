@@ -19,7 +19,7 @@ angle_exp = 1
 
 i_testset = 250
 
-neaf_raydata = rays_clean_200.json
+neaf_raydata = rays_wall_150_3.json
 
 tv-loss-weight = 0
 

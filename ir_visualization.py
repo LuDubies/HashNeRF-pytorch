@@ -25,7 +25,7 @@ def cgrade_ir(ir, filename, channel=1):
 def raw_ir(ir, filename):
     pil_image = Im.fromarray(np.uint8(ir * 255))
     pil_image.save(filename)
-    return {"ground_truth": wandb.Image(filename)}
+    return {"raw_ir": wandb.Image(filename)}
 
 
 def error_plot(target, prediction, filename, channel=1):

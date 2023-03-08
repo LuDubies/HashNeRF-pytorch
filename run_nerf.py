@@ -696,7 +696,7 @@ def train():
     irtestdir = os.path.join(basedir, expname, 'ir_tests')
     os.makedirs(irtestdir, exist_ok=True)
     perm_test_recs, ir_gt = build_neaf_batch(listener_states, i_test, args, reccount=50, mode='ir')
-    gt_log_dict = save_ir(ir_gt.cpu(), None, 'ir_groundt.png', savedir=irtestdir)
+    gt_log_dict = save_ir(ir_gt, None, 'ir_groundt.png', savedir=irtestdir)
 
     # Short circuit if only rendering out from trained model
     if args.render_only:
@@ -708,8 +708,7 @@ def train():
     N_rand = args.N_rand
     use_batching = not args.no_batching
 
-    N_iters = 30000 + 1
-    # N_iters = 50000 + 1
+    N_iters = 20000 + 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -825,9 +824,8 @@ def train():
                 img_loss_test = img2mse(test_rgbs, test_targets)
                 psnr_test = mse2psnr(img_loss_test)
                 tqdm.write(f"[TEST] Iter: {i} Recs: 1024 Loss: {img_loss_test.item()}  PSNR: {psnr_test.item()}")
-                if args.use_wandb:
-                    wandb.log({"test_loss": img_loss_test})
-                    wandb.log({"test_psnr": psnr_test})
+                log_dict.update({"test_loss": img_loss_test,
+                                 "test_psnr": psnr_test})
             with torch.no_grad():
                 irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test)
                 extra_log_dict = save_ir(irs, perm_test_recs, f"ir_{i}.png", irtestdir, truth=ir_gt)
@@ -848,7 +846,6 @@ def train():
                 raws = simple_model_query(pt, vd, ti, render_kwargs_train['network_query_fn'], render_kwargs_train['network_fn'])
             raw_alpha_at_source = raws[0, 0, 3]
             log_dict.update({"raw_alpha_at_source": raw_alpha_at_source})
-
 
         # log to wandb
         if args.use_wandb:
