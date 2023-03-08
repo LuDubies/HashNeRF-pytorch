@@ -16,8 +16,13 @@ def load_neaf_data(basedir, ray_file):
     listener_ids = np.arange(0, listener_count)
     np.random.shuffle(listener_ids)
     i_split = [listener_ids[:-tst_cnt], listener_ids[-tst_cnt:], []]
+
+    if 'source' in loaded_json.keys():
+        source_pos = torch.Tensor(loaded_json['source']['matrix'][:3])
+    else:
+        source_pos = None
     bounding_box = (torch.tensor([-3., -3., -3.]), torch.tensor([3., 3., 3.]))
-    return loaded_json["states"], i_split, bounding_box
+    return loaded_json["states"], i_split, source_pos, bounding_box
 
 def build_neaf_batch(states, listener_ids, args, reccount=None, mode='rec', directions=None):
     # random directions for receivers

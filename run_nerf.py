@@ -157,6 +157,7 @@ def render_ir(recs, timesteps, i, chunk, render_kwargs):
     irs = irs.cpu().numpy()
     return irs
 
+
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
@@ -405,9 +406,9 @@ def render_rays(ray_batch,
     # pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]
 
     # get offsets so we can calculate offset times
-    rays_offsets = rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples + N_importance, 3]
+    rays_offsets = rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
-    pt_times = None
+    pt_times = None  # [N_rays, N_samples, 1]
     if times is not None:
         sos = 343.
         offset_lengths = torch.linalg.norm(rays_offsets, dim=2)
@@ -461,6 +462,11 @@ def render_rays(ray_batch,
             print(f"! [Numerical Error] {k} contains nan or inf.")
 
     return ret
+
+# access the model without going 5 functions deep
+def simple_model_query(pts, viewdirs, pt_times, network_query_fn, model):
+    raw = network_query_fn(pts, viewdirs, pt_times, model)
+    return raw
 
 
 def config_parser():
@@ -622,7 +628,7 @@ def train():
     # Load data
     if args.dataset_type == 'neaf':
         print('loading precomputed rays from json')
-        listener_states, i_split, bounding_box = load_neaf_data(basedir=args.datadir, ray_file=args.neaf_raydata)
+        listener_states, i_split, source_pos, bounding_box = load_neaf_data(basedir=args.datadir, ray_file=args.neaf_raydata)
         i_train, i_test, i_val = i_split
         args.bounding_box = bounding_box
         near = 0.01
@@ -669,6 +675,7 @@ def train():
             "timesteps": args.neaf_timesteps,
             "time_encoding": args.multires_time,
             "angle_exponent": args.angle_exp,
+            "data_file": args.neaf_raydata,
         }
         wandb.init(project=args.wandb_project_name, entity="neaf", config=config)
 
@@ -684,14 +691,12 @@ def train():
     render_kwargs_train.update({'timeinterval': args.time_interval})
     render_kwargs_test.update({'timeinterval': args.time_interval})
 
-
     # get permanent recs for testing
     gt_log_dict = None
-    if args.dataset_type == 'neaf':
-        irtestdir = os.path.join(basedir, expname, 'ir_tests')
-        os.makedirs(irtestdir, exist_ok=True)
-        perm_test_recs, ir_gt = build_neaf_batch(listener_states, i_test, args, reccount=50, mode='ir')
-        gt_log_dict = save_ir(ir_gt, None, 'ir_groundt.png', savedir=irtestdir)
+    irtestdir = os.path.join(basedir, expname, 'ir_tests')
+    os.makedirs(irtestdir, exist_ok=True)
+    perm_test_recs, ir_gt = build_neaf_batch(listener_states, i_test, args, reccount=50, mode='ir')
+    gt_log_dict = save_ir(ir_gt.cpu(), None, 'ir_groundt.png', savedir=irtestdir)
 
     # Short circuit if only rendering out from trained model
     if args.render_only:
@@ -736,11 +741,10 @@ def train():
             listener_i = np.random.choice(i_train, (1,))
             batch_rays, target_s, times = build_neaf_batch(listener_states, listener_i, args)
 
-
         #####  Core optimization loop  #####
         rgb, depth, acc, extras = render(chunk=args.chunk, rays=batch_rays,
-                                                verbose=i < 10, retraw=True, times=times,
-                                                **render_kwargs_train)
+                                         verbose=i < 10, retraw=True, times=times,
+                                         **render_kwargs_train)
 
         optimizer.zero_grad()
         img_loss = img2mse(rgb, target_s)
@@ -813,8 +817,7 @@ def train():
             print('Saved checkpoints at', path)
 
         if i%args.i_testset==0 and i > 0:
-            # get loss and ir for testset receivers
-            # compare vals for test receivers
+            # get loss and ir for testset of receivers
             np.random.shuffle(i_test)
             with torch.no_grad():
                 recs, test_targets, times = build_neaf_batch(listener_states, i_test, args, reccount=1024)
@@ -830,6 +833,22 @@ def train():
                 extra_log_dict = save_ir(irs, perm_test_recs, f"ir_{i}.png", irtestdir, truth=ir_gt)
                 log_dict.update(extra_log_dict)
 
+        # Manual alpha logging for DEBUGGING
+        if i%10==0 and source_pos is not None:
+            # get alpha at source position if available and log to wandb
+            # TODO "manually" query model for alpha
+            # time and direction values are irrelevant for the alpha, just ask the model directly :D
+            # need query fn, set of points, no or pseudo viewdir and pttimes, ref to model
+
+            pt = source_pos[None, None, :]  # Tensor needs shape [N_rays, N_Samples, 3]
+            vd = torch.Tensor([1., 0., 0.])[None, :]  # Tensor needs shape [N_rays, 3]
+            ti = torch.Tensor([.5])[None, None, :]  # Tensor needs shape [N_rays, N_Samples, 3]
+
+            with torch.no_grad():
+                raws = simple_model_query(pt, vd, ti, render_kwargs_train['network_query_fn'], render_kwargs_train['network_fn'])
+            raw_alpha_at_source = raws[0, 0, 3]
+            log_dict.update({"raw_alpha_at_source": raw_alpha_at_source})
+
 
         # log to wandb
         if args.use_wandb:
@@ -838,6 +857,7 @@ def train():
                 gt_log_dict = None
             wandb.log(log_dict)
 
+        # cmdln output
         if i%args.i_print==0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
             loss_list.append(loss.item())

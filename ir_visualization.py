@@ -7,13 +7,12 @@ from os import path
 from PIL import Image as Im
 
 def save_ir(irs, recs, filename, savedir, truth=None):
-    if recs is None:
-        pil_image = Im.fromarray(np.uint8(irs * 255))
-        pil_image.save(path.join(savedir, 'raw_' + filename))
+
     log_dict = cgrade_ir(irs, path.join(savedir, filename))
+    if recs is None:
+        log_dict.update(raw_ir(irs, path.join(savedir, 'raw_' + filename)))
     if truth is not None:
-        log_dict_2 = error_plot(truth, irs, path.join(savedir, 'error_' + filename))
-        log_dict.update(log_dict_2)
+        log_dict.update(error_plot(truth, irs, path.join(savedir, 'error_' + filename)))
     return log_dict
 
 def cgrade_ir(ir, filename, channel=1):
@@ -22,6 +21,11 @@ def cgrade_ir(ir, filename, channel=1):
     plt.savefig(filename)
 
     return {"ir": wandb.Image(filename)}
+
+def raw_ir(ir, filename):
+    pil_image = Im.fromarray(np.uint8(ir * 255))
+    pil_image.save(filename)
+    return {"ground_truth": wandb.Image(filename)}
 
 
 def error_plot(target, prediction, filename, channel=1):
