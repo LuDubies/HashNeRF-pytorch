@@ -4,8 +4,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import wandb
 from os import path
+from PIL import Image as Im
 
 def save_ir(irs, recs, filename, savedir, truth=None):
+    if recs is None:
+        pil_image = Im.fromarray(np.uint8(irs * 255))
+        pil_image.save(path.join(savedir, 'raw_' + filename))
     log_dict = cgrade_ir(irs, path.join(savedir, filename))
     if truth is not None:
         log_dict_2 = error_plot(truth, irs, path.join(savedir, 'error_' + filename))

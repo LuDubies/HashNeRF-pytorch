@@ -82,10 +82,9 @@ def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
     return all_ret
 
 
-def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
+def render(chunk=1024*32, rays=None,
                   near=0., far=1.,
                   use_viewdirs=False, times=None,
-                  c2w_staticcam=None,
                   **kwargs):
     """Render rays
     Args:
@@ -97,7 +96,6 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
       rays: array of shape [2, batch_size, 3]. Ray origin and direction for
         each example in batch.
       c2w: array of shape [3, 4]. Camera-to-world transformation matrix.
-      ndc: bool. If True, represent ray origin, direction in NDC coordinates.
       near: float or array of shape [batch_size]. Nearest distance for a ray.
       far: float or array of shape [batch_size]. Farthest distance for a ray.
       use_viewdirs: bool. If True, use viewing direction of a point in space in model.
@@ -109,26 +107,17 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
       acc_map: [batch_size]. Accumulated opacity (alpha) along a ray.
       extras: dict with everything returned by render_rays().
     """
-    if c2w is not None:
-        # special case to render full image
-        rays_o, rays_d = get_rays(H, W, K, c2w)
-    else:
-        # use provided ray batch
-        rays_o, rays_d = rays
+
+    # use provided ray batch
+    rays_o, rays_d = rays
 
     if use_viewdirs:
         # provide ray directions as input
         viewdirs = rays_d
-        if c2w_staticcam is not None:
-            # special case to visualize effect of viewdirs
-            rays_o, rays_d = get_rays(H, W, K, c2w_staticcam)
         viewdirs = viewdirs / torch.norm(viewdirs, dim=-1, keepdim=True)
         viewdirs = torch.reshape(viewdirs, [-1,3]).float()
 
-    sh = rays_d.shape # [..., 3]
-    if ndc:
-        # for forward facing scenes
-        rays_o, rays_d = ndc_rays(H, W, K[0][0], 1., rays_o, rays_d)
+    sh = rays_d.shape  # [..., 3]
 
     # Create ray batch
     rays_o = torch.reshape(rays_o, [-1,3]).float()
@@ -152,72 +141,8 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
     ret_dict = {k : all_ret[k] for k in all_ret if k not in k_extract}
     return ret_list + [ret_dict]
 
-
-def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedir=None, render_factor=0):
-
-    H, W, focal = hwf
-    near, far = render_kwargs['near'], render_kwargs['far']
-
-    if render_factor!=0:
-        # Render downsampled for speed
-        H = H//render_factor
-        W = W//render_factor
-        focal = focal/render_factor
-
-    rgbs = []
-    depths = []
-    psnrs = []
-
-    t = time.time()
-    for i, c2w in enumerate(tqdm(render_poses)):
-        print(i, time.time() - t)
-        t = time.time()
-        rgb, depth, acc, _ = render(H, W, K, chunk=chunk, c2w=c2w[:3,:4], **render_kwargs)
-        rgbs.append(rgb.cpu().numpy())
-        # normalize depth to [0,1]
-        depth = (depth - near) / (far - near)
-        depths.append(depth.cpu().numpy())
-        if i==0:
-            print(rgb.shape, depth.shape)
-
-        if gt_imgs is not None and render_factor==0:
-            try:
-                gt_img = gt_imgs[i].cpu().numpy()
-            except:
-                gt_img = gt_imgs[i]
-            p = -10. * np.log10(np.mean(np.square(rgb.cpu().numpy() - gt_img)))
-            print(p)
-            psnrs.append(p)
-
-        if savedir is not None:
-            # save rgb and depth as a figure
-            fig = plt.figure(figsize=(25,15))
-            ax = fig.add_subplot(1, 2, 1)
-            rgb8 = to8b(rgbs[-1])
-            ax.imshow(rgb8)
-            ax.axis('off')
-            ax = fig.add_subplot(1, 2, 2)
-            ax.imshow(depths[-1], cmap='plasma', vmin=0, vmax=1)
-            ax.axis('off')
-            filename = os.path.join(savedir, '{:03d}.png'.format(i))
-            # save as png
-            plt.savefig(filename, bbox_inches='tight', pad_inches=0)
-            plt.close(fig)
-            # imageio.imwrite(filename, rgb8)
-
-
-    rgbs = np.stack(rgbs, 0)
-    depths = np.stack(depths, 0)
-    if gt_imgs is not None and render_factor==0:
-        avg_psnr = sum(psnrs)/len(psnrs)
-        print("Avg PSNR over Test set: ", avg_psnr)
-        with open(os.path.join(savedir, "test_psnrs_avg{:0.2f}.pkl".format(avg_psnr)), "wb") as fp:
-            pickle.dump(psnrs, fp)
-
-    return rgbs, depths
-
 def render_recs(recs, times, chunk, render_kwargs):
-    rgb, _, _, _ = render(0, 0, 0, rays=recs, times=times, chunk=chunk, **render_kwargs)
+    rgb, _, _, _ = render(rays=recs, times=times, chunk=chunk, **render_kwargs)
     return rgb
 
 
@@ -231,6 +156,7 @@ def render_ir(recs, timesteps, i, chunk, render_kwargs):
     irs = irs.reshape((rec_count, timesteps, 3))
     irs = irs.cpu().numpy()
     return irs
+
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
@@ -347,11 +273,7 @@ def create_nerf(args):
         'raw_noise_std' : args.raw_noise_std,
     }
 
-    # NDC only good for LLFF-style forward facing data
-    if args.dataset_type != 'llff' or args.no_ndc:
-        print('Not ndc!')
-        render_kwargs_train['ndc'] = False
-        render_kwargs_train['lindisp'] = args.lindisp
+    render_kwargs_train['lindisp'] = args.lindisp
 
     render_kwargs_test = {k : render_kwargs_train[k] for k in render_kwargs_train}
     render_kwargs_test['perturb'] = False
@@ -698,85 +620,7 @@ def train():
     args = parser.parse_args()
 
     # Load data
-    K = None
-    if args.dataset_type == 'llff':
-        images, poses, bds, render_poses, i_test, bounding_box = load_llff_data(args.datadir, args.factor,
-                                                                  recenter=True, bd_factor=.75,
-                                                                  spherify=args.spherify)
-        hwf = poses[0,:3,-1]
-        poses = poses[:,:3,:4]
-        args.bounding_box = bounding_box
-        print('Loaded llff', images.shape, render_poses.shape, hwf, args.datadir)
-
-        if not isinstance(i_test, list):
-            i_test = [i_test]
-
-        if args.llffhold > 0:
-            print('Auto LLFF holdout,', args.llffhold)
-            i_test = np.arange(images.shape[0])[::args.llffhold]
-
-        i_val = i_test
-        i_train = np.array([i for i in np.arange(int(images.shape[0])) if
-                        (i not in i_test and i not in i_val)])
-
-        print('DEFINING BOUNDS')
-        if args.no_ndc:
-            near = np.ndarray.min(bds) * .9
-            far = np.ndarray.max(bds) * 1.
-
-        else:
-            near = 0.
-            far = 1.
-        print('NEAR FAR', near, far)
-
-    elif args.dataset_type == 'blender':
-        images, poses, render_poses, hwf, i_split, bounding_box = load_blender_data(args.datadir, args.half_res, args.testskip)
-        args.bounding_box = bounding_box
-        print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
-        i_train, i_val, i_test = i_split
-
-        near = 2.
-        far = 6.
-
-        if args.white_bkgd:
-            images = images[...,:3]*images[...,-1:] + (1.-images[...,-1:])
-        else:
-            images = images[...,:3]
-
-    elif args.dataset_type == 'scannet':
-        images, poses, render_poses, hwf, i_split, bounding_box = load_scannet_data(args.datadir, args.scannet_sceneID, args.half_res)
-        args.bounding_box = bounding_box
-        print('Loaded scannet', images.shape, render_poses.shape, hwf, args.datadir)
-        i_train, i_val, i_test = i_split
-
-        near = 0.1
-        far = 10.0
-
-    elif args.dataset_type == 'LINEMOD':
-        images, poses, render_poses, hwf, K, i_split, near, far = load_LINEMOD_data(args.datadir, args.half_res, args.testskip)
-        print(f'Loaded LINEMOD, images shape: {images.shape}, hwf: {hwf}, K: {K}')
-        print(f'[CHECK HERE] near: {near}, far: {far}.')
-        i_train, i_val, i_test = i_split
-
-        if args.white_bkgd:
-            images = images[...,:3]*images[...,-1:] + (1.-images[...,-1:])
-        else:
-            images = images[...,:3]
-
-    elif args.dataset_type == 'deepvoxels':
-
-        images, poses, render_poses, hwf, i_split = load_dv_data(scene=args.shape,
-                                                                 basedir=args.datadir,
-                                                                 testskip=args.testskip)
-
-        print('Loaded deepvoxels', images.shape, render_poses.shape, hwf, args.datadir)
-        i_train, i_val, i_test = i_split
-
-        hemi_R = np.mean(np.linalg.norm(poses[:,:3,-1], axis=-1))
-        near = hemi_R-1.
-        far = hemi_R+1.
-
-    elif args.dataset_type == 'neaf':
+    if args.dataset_type == 'neaf':
         print('loading precomputed rays from json')
         listener_states, i_split, bounding_box = load_neaf_data(basedir=args.datadir, ray_file=args.neaf_raydata)
         i_train, i_test, i_val = i_split
@@ -786,24 +630,6 @@ def train():
     else:
         print('Unknown dataset type', args.dataset_type, 'exiting')
         return
-
-    if args.dataset_type == 'neaf':
-        hwf = 0, 0, 0
-
-    # Cast intrinsics to right types
-    H, W, focal = hwf
-    H, W = int(H), int(W)
-    hwf = [H, W, focal]
-
-    if K is None:
-        K = np.array([
-            [focal, 0, 0.5*W],
-            [0, focal, 0.5*H],
-            [0, 0, 1]
-        ])
-
-    if args.render_test:
-        render_poses = np.array(poses[i_test])
 
     # Create log dir and copy the config file
     basedir = args.basedir
@@ -858,9 +684,6 @@ def train():
     render_kwargs_train.update({'timeinterval': args.time_interval})
     render_kwargs_test.update({'timeinterval': args.time_interval})
 
-    # Move testing data to GPU
-    if not args.dataset_type == 'neaf':
-        render_poses = torch.Tensor(render_poses).to(device)
 
     # get permanent recs for testing
     gt_log_dict = None
@@ -874,49 +697,11 @@ def train():
     if args.render_only:
         # TODO for neaf
         print('RENDER ONLY')
-        with torch.no_grad():
-            if args.render_test:
-                # render_test switches to test poses
-                images = images[i_test]
-            else:
-                # Default is smoother render_poses path
-                images = None
-
-            testsavedir = os.path.join(basedir, expname, 'renderonly_{}_{:06d}'.format('test' if args.render_test else 'path', start))
-            os.makedirs(testsavedir, exist_ok=True)
-            print('test poses shape', render_poses.shape)
-
-            rgbs, _ = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test, gt_imgs=images, savedir=testsavedir, render_factor=args.render_factor)
-            print('Done rendering', testsavedir)
-            imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
-            return
+        quit()
 
     # Prepare raybatch tensor if batching random rays
     N_rand = args.N_rand
     use_batching = not args.no_batching
-    if use_batching and args.dataset_type != 'neaf':
-        # For random ray batching
-        print('get rays')
-        rays = np.stack([get_rays_np(H, W, K, p) for p in poses[:,:3,:4]], 0) # [N, ro+rd, H, W, 3]
-        print('done, concats')
-        rays_rgb = np.concatenate([rays, images[:,None]], 1) # [N, ro+rd+rgb, H, W, 3]
-        rays_rgb = np.transpose(rays_rgb, [0,2,3,1,4]) # [N, H, W, ro+rd+rgb, 3]
-        rays_rgb = np.stack([rays_rgb[i] for i in i_train], 0) # train images only
-        rays_rgb = np.reshape(rays_rgb, [-1,3,3]) # [(N-1)*H*W, ro+rd+rgb, 3]
-        rays_rgb = rays_rgb.astype(np.float32)
-        print('shuffle rays')
-        np.random.shuffle(rays_rgb)
-
-        print('done')
-        i_batch = 0
-
-    # Move training data to GPU
-    if not args.dataset_type == 'neaf':
-        if use_batching:
-            images = torch.Tensor(images).to(device)
-        poses = torch.Tensor(poses).to(device)
-        if use_batching:
-            rays_rgb = torch.Tensor(rays_rgb).to(device)
 
     N_iters = 30000 + 1
     # N_iters = 50000 + 1
@@ -943,62 +728,17 @@ def train():
     for i in trange(start, N_iters):
         # Sample random ray batch
         if use_batching:
-            if not args.dataset_type == 'neaf':
-                # Random over all images
-                batch = rays_rgb[i_batch:i_batch+N_rand] # [B, 2+1, 3*?]
-                batch = torch.transpose(batch, 0, 1)
-                batch_rays, target_s = batch[:2], batch[2]
-
-                i_batch += N_rand
-                if i_batch >= rays_rgb.shape[0]:
-                    print("Shuffle data after an epoch!")
-                    rand_idx = torch.randperm(rays_rgb.shape[0])
-                    rays_rgb = rays_rgb[rand_idx]
-                    i_batch = 0
-                    times = None
-            else:
-                np.random.shuffle(i_train)
-                batch_rays, target_s, times = build_neaf_batch(listener_states, i_train, args)
+            np.random.shuffle(i_train)
+            batch_rays, target_s, times = build_neaf_batch(listener_states, i_train, args)
         else:
-            # Random from one image
-            if not args.dataset_type == 'neaf':
-                img_i = np.random.choice(i_train)
-                target = images[img_i]
-                target = torch.Tensor(target).to(device)
-                pose = poses[img_i, :3,:4]
-
-                if N_rand is not None:
-                    rays_o, rays_d = get_rays(H, W, K, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
-
-                    if i < args.precrop_iters:
-                        dH = int(H//2 * args.precrop_frac)
-                        dW = int(W//2 * args.precrop_frac)
-                        coords = torch.stack(
-                            torch.meshgrid(
-                                torch.linspace(H//2 - dH, H//2 + dH - 1, 2*dH),
-                                torch.linspace(W//2 - dW, W//2 + dW - 1, 2*dW)
-                            ), -1)
-                        if i == start:
-                            print(f"[Config] Center cropping of size {2*dH} x {2*dW} is enabled until iter {args.precrop_iters}")
-                    else:
-                        coords = torch.stack(torch.meshgrid(torch.linspace(0, H-1, H), torch.linspace(0, W-1, W)), -1)  # (H, W, 2)
-
-                    coords = torch.reshape(coords, [-1,2])  # (H * W, 2)
-                    select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=False)  # (N_rand,)
-                    select_coords = coords[select_inds].long()  # (N_rand, 2)
-                    rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                    rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                    batch_rays = torch.stack([rays_o, rays_d], 0)
-                    target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                    times = None
-            else:
-                # build receiver batch from precomputed rays
-                listener_i = np.random.choice(i_train, (1,))
-                batch_rays, target_s, times = build_neaf_batch(listener_states, listener_i, args)
+            # Random from one location
+            # build receiver batch from precomputed rays
+            listener_i = np.random.choice(i_train, (1,))
+            batch_rays, target_s, times = build_neaf_batch(listener_states, listener_i, args)
 
 
         #####  Core optimization loop  #####
-        rgb, depth, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
+        rgb, depth, acc, extras = render(chunk=args.chunk, rays=batch_rays,
                                                 verbose=i < 10, retraw=True, times=times,
                                                 **render_kwargs_train)
 
@@ -1072,48 +812,24 @@ def train():
                 }, path)
             print('Saved checkpoints at', path)
 
-        if i%args.i_video==0 and i > 0 and args.dataset_type != 'neaf':
-            # Turn on testing mode
-            with torch.no_grad():
-                rgbs, disps = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test)
-            print('Done, saving', rgbs.shape, disps.shape)
-            moviebase = os.path.join(basedir, expname, '{}_spiral_{:06d}_'.format(expname, i))
-            imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
-            imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
-
-            # if args.use_viewdirs:
-            #     render_kwargs_test['c2w_staticcam'] = render_poses[0][:3,:4]
-            #     with torch.no_grad():
-            #         rgbs_still, _ = render_path(render_poses, hwf, args.chunk, render_kwargs_test)
-            #     render_kwargs_test['c2w_staticcam'] = None
-            #     imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
-
         if i%args.i_testset==0 and i > 0:
-            if args.dataset_type == 'neaf':
-                # get loss and ir for testset receivers
-                # compare vals for test receivers
-                np.random.shuffle(i_test)
-                with torch.no_grad():
-                    recs, test_targets, times = build_neaf_batch(listener_states, i_test, args, reccount=1024)
-                    test_rgbs = render_recs(recs, times, args.chunk, render_kwargs_test)
-                    img_loss_test = img2mse(test_rgbs, test_targets)
-                    psnr_test = mse2psnr(img_loss_test)
-                    tqdm.write(f"[TEST] Iter: {i} Recs: 1024 Loss: {img_loss_test.item()}  PSNR: {psnr_test.item()}")
-                    if args.use_wandb:
-                        wandb.log({"test_loss": img_loss_test})
-                        wandb.log({"test_psnr": psnr_test})
-                with torch.no_grad():
-                    irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test)
-                    extra_log_dict = save_ir(irs, perm_test_recs, f"ir_{i}.png", irtestdir, truth=ir_gt)
-                    log_dict.update(extra_log_dict)
+            # get loss and ir for testset receivers
+            # compare vals for test receivers
+            np.random.shuffle(i_test)
+            with torch.no_grad():
+                recs, test_targets, times = build_neaf_batch(listener_states, i_test, args, reccount=1024)
+                test_rgbs = render_recs(recs, times, args.chunk, render_kwargs_test)
+                img_loss_test = img2mse(test_rgbs, test_targets)
+                psnr_test = mse2psnr(img_loss_test)
+                tqdm.write(f"[TEST] Iter: {i} Recs: 1024 Loss: {img_loss_test.item()}  PSNR: {psnr_test.item()}")
+                if args.use_wandb:
+                    wandb.log({"test_loss": img_loss_test})
+                    wandb.log({"test_psnr": psnr_test})
+            with torch.no_grad():
+                irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test)
+                extra_log_dict = save_ir(irs, perm_test_recs, f"ir_{i}.png", irtestdir, truth=ir_gt)
+                log_dict.update(extra_log_dict)
 
-            else:
-                testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
-                os.makedirs(testsavedir, exist_ok=True)
-                print('test poses shape', poses[i_test].shape)
-                with torch.no_grad():
-                    render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test, gt_imgs=images[i_test], savedir=testsavedir)
-                print('Saved test set')
 
         # log to wandb
         if args.use_wandb:
