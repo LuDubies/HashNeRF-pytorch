@@ -9,7 +9,7 @@ def run_around_tests():
     yield
 
 def test_load_neaf_data():
-    states, i_split, bb = load_neaf_data(r'./test_data', r'rays_clean_200.json')
+    states, i_split, source_pos, bb = load_neaf_data(r'./test_data', r'rays_clean_200.json')
     assert(len(states) == 200)
     assert(len(i_split) == 3)
 
@@ -21,15 +21,17 @@ def test_batch_building():
             'angle_exp': 2}
     args = Namespace(**args)
 
-    listener_states, _, _ = load_neaf_data(r'./test_data', r'rays_clean_200.json')
+    listener_states, _, _, _ = load_neaf_data(r'./test_data', r'rays_clean_200.json')
 
-    test_loc_i = 0
+    test_loc_i = 5
     algo_test_recs, algo_test_ir = build_neaf_batch(listener_states, [test_loc_i], args, reccount=100, mode='ir')
     algo_test_recs_2, algo_test_target, algo_test_times = build_neaf_batch(listener_states, [test_loc_i], args,
                                                                            reccount=100, mode='rec',
                                                                            directions=algo_test_recs[1])
     assert(torch.allclose(algo_test_recs, algo_test_recs_2))
-
+    nzs = torch.count_nonzero(algo_test_target)
+    assert(nzs > 0)  # just make sure were not testing only empty stuff
+    # print(f"Nonzeros in test target {nzs}: {(nzs / torch.numel(algo_test_target)) * 100}%")
     error = False
     algo_test_times = torch.floor(algo_test_times * args.neaf_timesteps)
     for test_iter in range(algo_test_times.shape[0]):

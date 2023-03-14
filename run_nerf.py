@@ -674,6 +674,7 @@ def train():
             "batch_size": args.N_rand,
             "timesteps": args.neaf_timesteps,
             "time_encoding": args.multires_time,
+            "time_interval": args.time_interval,
             "angle_exponent": args.angle_exp,
             "data_file": args.neaf_raydata,
         }
