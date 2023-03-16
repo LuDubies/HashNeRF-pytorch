@@ -840,14 +840,17 @@ def train():
             # time and direction values are irrelevant for the alpha, just ask the model directly :D
             # need query fn, set of points, no or pseudo viewdir and pttimes, ref to model
 
-            pt = source_pos[None, None, :]  # Tensor needs shape [N_rays, N_Samples, 3]
+            pt = torch.stack((source_pos, torch.Tensor([0., 0., 0.])), dim=0)[None, :, :]  # Tensor needs shape [N_rays, N_Samples, 3]
             vd = torch.Tensor([1., 0., 0.])[None, :]  # Tensor needs shape [N_rays, 3]
-            ti = torch.Tensor([.5])[None, None, :]  # Tensor needs shape [N_rays, N_Samples, 3]
+            ti = torch.Tensor([[.5], [.5]])[None, :, :]  # Tensor needs shape [N_rays, N_Samples, 3]
 
             with torch.no_grad():
-                raws = simple_model_query(pt, vd, ti, render_kwargs_train['network_query_fn'], render_kwargs_train['network_fn'])
+                raws = simple_model_query(pt, vd, ti, render_kwargs_train['network_query_fn'],
+                                          render_kwargs_train['network_fn'])
             raw_alpha_at_source = raws[0, 0, 3]
-            log_dict.update({"raw_alpha_at_source": raw_alpha_at_source})
+            raw_alpha_at_origin = raws[0, 1, 3]
+            log_dict.update({"raw_alpha_at_source": raw_alpha_at_source,
+                             "raw_alpha_at_origin": raw_alpha_at_origin})
 
         # log to wandb
         if args.use_wandb:
