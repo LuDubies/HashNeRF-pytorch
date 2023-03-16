@@ -6,41 +6,75 @@ import wandb
 from os import path
 from PIL import Image as Im
 
-def save_ir(irs, recs, filename, savedir, truth=None):
+def array_to_picture(npa, fullpath):
+    scaled = np.uint8(255*npa)
+    plt.imshow(scaled, cmap='hot', vmin=0, vmax=255)
+    plt.savefig(fullpath)
+    return fullpath
 
-    log_dict = cgrade_ir(irs, path.join(savedir, filename))
+
+def save_ir(irs, recs, filename, savedir, truth=None):
+    log_dict = cgrade_ir(irs, filename, savedir)
     if recs is None:
-        log_dict.update(raw_ir(irs, path.join(savedir, 'raw_' + filename)))
+        log_dict.update(raw_ir(irs, filename, savedir))
     if truth is not None:
-        log_dict.update(error_plot(truth, irs, path.join(savedir, 'error_' + filename)))
+        log_dict.update(error_plot(truth, irs, filename, savedir))
     return log_dict
 
-def cgrade_ir(ir, filename, channel=1):
+def cgrade_ir(ir, filename, savedir, channel=1):
     ir = np.uint8(255*ir[:, :, channel])
     plt.imshow(ir, cmap='hot', vmin=0, vmax=255)
-    plt.savefig(filename)
+    plt.savefig(path.join(savedir, filename))
 
-    return {"ir": wandb.Image(filename)}
+    return {"ir": wandb.Image(path.join(savedir, filename))}
 
-def raw_ir(ir, filename):
+def raw_ir(ir, filename, savedir):
+    filename = 'raw_' + filename
     pil_image = Im.fromarray(np.uint8(ir * 255))
-    pil_image.save(filename)
-    return {"raw_ir": wandb.Image(filename)}
+    pil_image.save(path.join(savedir, filename))
+    return {"raw_ir": wandb.Image(path.join(savedir, filename))}
 
 
-def error_plot(target, prediction, filename, channel=1):
+def error_plot(target, prediction, filename, savedir, channel=1):
+    target = target[:, :, channel]
+    prediction = prediction[:, :, channel]
+
+    # absolute error
+    errorfn = path.join(savedir, 'error_' + filename)
     error = np.abs(target - prediction)
-    errorpic = np.uint8(255*error[:, :, channel])
+    errorpic = np.uint8(255*error)
     plt.imshow(errorpic, cmap='hot', vmin=0, vmax=255)
-    plt.savefig(filename)
+    plt.savefig(errorfn)
+
+    # both in one image, layered in red and green channel
+    layerfn = path.join(savedir, 'layer_' + filename)
+    layer = np.stack((target, prediction, np.zeros_like(target)), -1)
+    layerpic = np.uint8(255*layer)
+    plt.imshow(layerpic, vmin=0, vmax=255)
+    plt.savefig(layerfn)
     mse2psnr = lambda x: -10. * np.log(x) / np.log(10.)
 
+    # shifting prediction left
+    shifts = range(1, 5)
+    shiftdict = dict()
+    for s in shifts:
+        # shift prediction left to see if we match better
+        sprediction = np.concatenate((prediction[:, :-s], np.zeros_like(prediction)[:, :s]), axis=1)
+        serror = np.abs(target - sprediction)
+        shiftname = array_to_picture(serror, path.join(savedir, f"shift_{s}_error_" + filename))
+        shiftdict.update({f"serror_{s}": wandb.Image(shiftname)})
+
+    # mask error for ground truth positive (gtp) and ground truth zero (gtz) pixels
     mask = np.greater(target, 0)
     fperr = np.mean((error * mask) ** 2)
     fzerr = np.mean((error * np.invert(mask)) ** 2)
-    return {"error": wandb.Image(filename),
-            "gtp_error": fperr,
-            "gtp_psnr": mse2psnr(fperr),
-            "gtz_error": fzerr,
-            "gtz_psnr": mse2psnr(fzerr)}
+    to_log = {"error": wandb.Image(errorfn),
+              "layered": wandb.Image(layerfn),
+              "gtp_error": fperr,
+              "gtp_psnr": mse2psnr(fperr),
+              "gtz_error": fzerr,
+              "gtz_psnr": mse2psnr(fzerr)}
+    to_log.update(shiftdict)
+
+    return to_log
 
