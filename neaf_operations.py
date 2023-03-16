@@ -14,7 +14,8 @@ def load_neaf_data(basedir, ray_file):
     tst_cnt = listener_count // 10
 
     listener_ids = np.arange(0, listener_count)
-    np.random.shuffle(listener_ids)
+    rng = np.random.default_rng()
+    rng.shuffle(listener_ids)
     i_split = [listener_ids[:-tst_cnt], listener_ids[-tst_cnt:], []]
 
     if 'source' in loaded_json.keys():

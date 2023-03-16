@@ -655,6 +655,7 @@ def train():
     args.expname += "_TV" + str(args.tv_loss_weight)
     args.expname += datetime.now().strftime('_%H_%M_%d_%m_%Y')
     expname = args.expname
+    print(f"This experiment is named: {expname}")
 
     os.makedirs(os.path.join(basedir, expname), exist_ok=True)
     f = os.path.join(basedir, expname, 'args.txt')
