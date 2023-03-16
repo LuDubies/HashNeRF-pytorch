@@ -156,7 +156,7 @@ def load_data_for_state(state):
 
         directions = directions / torch.linalg.norm(directions, dim=1, keepdims=True)
         distances = torch.Tensor([ray["distance"] for ray in state["rays"]])
-        falloff_factors = 1 / (1 + distances)
+        falloff_factors = torch.minimum(torch.ones_like(distances), 1 / distances)
         absorption = torch.Tensor([ray["absorption"] for ray in state["rays"]])
         absorption = torch.stack((torch.mean(absorption[:, :3], dim=1),
                                   torch.mean(absorption[:, 3:7], dim=1),
