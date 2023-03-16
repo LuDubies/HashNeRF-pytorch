@@ -36,11 +36,11 @@ def error_plot(target, prediction, filename, channel=1):
     mse2psnr = lambda x: -10. * np.log(x) / np.log(10.)
 
     mask = np.greater(target, 0)
-    fnerr = np.mean((error * mask) ** 2)
-    fperr = np.mean((error * np.invert(mask)))
+    fperr = np.mean((error * mask) ** 2)
+    fzerr = np.mean((error * np.invert(mask)) ** 2)
     return {"error": wandb.Image(filename),
-            "gtp_error": fnerr,
-            "gtp_psnr": mse2psnr(fnerr),
-            "gtn_error": fperr,
-            "gtn_psnr": mse2psnr(fperr)}
+            "gtp_error": fperr,
+            "gtp_psnr": mse2psnr(fperr),
+            "gtz_error": fzerr,
+            "gtz_psnr": mse2psnr(fzerr)}
 
