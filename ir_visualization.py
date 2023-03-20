@@ -64,6 +64,10 @@ def error_plot(target, prediction, filename, savedir, channel=1):
         shiftname = array_to_picture(serror, path.join(savedir, f"shift_{s}_error_" + filename))
         shiftdict.update({f"serror_{s}": wandb.Image(shiftname)})
 
+    # argmax diff calc
+    argmaxdiff = np.argmax(target, axis=1) - np.argmax(prediction, axis=1)
+    mean_amd = np.mean(argmaxdiff)
+
     # mask error for ground truth positive (gtp) and ground truth zero (gtz) pixels
     mask = np.greater(target, 0)
     fperr = np.mean((error * mask) ** 2)
@@ -73,7 +77,9 @@ def error_plot(target, prediction, filename, savedir, channel=1):
               "gtp_error": fperr,
               "gtp_psnr": mse2psnr(fperr),
               "gtz_error": fzerr,
-              "gtz_psnr": mse2psnr(fzerr)}
+              "gtz_psnr": mse2psnr(fzerr),
+              "argmaxdiff_mean": mean_amd,
+              "argmaxdiff": argmaxdiff}
     to_log.update(shiftdict)
 
     return to_log
