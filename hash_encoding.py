@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 import pdb
 
-from utils import get_voxel_vertices
+from utils import get_voxel_vertices, get_range_bounds
 
 class HashEmbedder(nn.Module):
     def __init__(self, bounding_box, n_levels=16, n_features_per_level=2,\
@@ -27,7 +27,6 @@ class HashEmbedder(nn.Module):
         for i in range(n_levels):
             nn.init.uniform_(self.embeddings[i].weight, a=-0.0001, b=0.0001)
             # self.embeddings[i].weight.data.zero_()
-        
 
     def trilinear_interp(self, x, voxel_min_vertex, voxel_max_vertex, voxel_embedds):
         '''
@@ -71,6 +70,56 @@ class HashEmbedder(nn.Module):
 
         keep_mask = keep_mask.sum(dim=-1)==keep_mask.shape[-1]
         return torch.cat(x_embedded_all, dim=-1), keep_mask
+
+
+class TimeHashEmbedder(nn.Module):
+    # one dimension version of 3D HashEncoding
+    def __init__(self, bounds, n_levels=16, n_features_per_level=2,\
+                log2_hashmap_size=19, base_resolution=16, finest_resolution=512):
+        super(TimeHashEmbedder, self).__init__()
+        self.bounds = bounds  # value pair of lower bound and upper bound for encoding
+        self.n_levels = n_levels
+        self.n_features_per_level = n_features_per_level
+        self.log2_hashmap_size = log2_hashmap_size
+        self.base_resolution = torch.tensor(base_resolution)
+        self.finest_resolution = torch.tensor(finest_resolution)
+        self.out_dim = self.n_levels * self.n_features_per_level
+
+        self.b = torch.exp((torch.log(self.finest_resolution) - torch.log(self.base_resolution)) / (n_levels - 1))
+        self.embeddings = nn.ModuleList([nn.Embedding(2 ** self.log2_hashmap_size, \
+                                                      self.n_features_per_level) for i in range(n_levels)])
+
+        # custom uniform initialization
+        for i in range(n_levels):
+            nn.init.uniform_(self.embeddings[i].weight, a=-0.0001, b=0.0001)
+
+    def linear_interp(self, x, range_lower_bound, range_upper_bound, bound_embeds):
+        '''
+        x: B x 1
+        range_lower_bound: B x 1
+        range_upper_bound: B x 1
+        bound_embeds: B x 2 x 2
+        '''
+        weights = (x - range_lower_bound)/(range_upper_bound-range_lower_bound)  # B x 1
+        c = bound_embeds[:, 0]*(1-weights[:, 0][:, None]) + bound_embeds[:, 1]*weights[:, 0][:, None]
+        return c
+
+    def forward(self, x):
+        # x is a 1D value: B x 1
+        x_embedded_all = []
+        for i in range(self.n_levels):
+            resolution = torch.floor(self.base_resolution * self.b ** i)
+            lower_bound, upper_bound, hashed_bound_indices, keep_mask = get_range_bounds(\
+                x, self.bounds,\
+                resolution, self.log2_hashmap_size)
+            bound_embeds = self.embeddings[i](hashed_bound_indices)
+            x_embedded = self.linear_interp(x, lower_bound, upper_bound, bound_embeds)
+            x_embedded_all.append(x_embedded)
+
+        # omit for now, we should always be in range, if t is >0 and is clamped it does not matter anyway
+        # keep_mask = keep_mask.sum(dim=-1)==keep_mask.shape[-1]
+
+        return torch.cat(x_embedded_all, dim=-1)
 
 
 class SHEncoder(nn.Module):

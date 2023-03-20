@@ -117,6 +117,28 @@ def get_voxel_vertices(xyz, bounding_box, resolution, log2_hashmap_size):
     return voxel_min_vertex, voxel_max_vertex, hashed_voxel_indices, keep_mask
 
 
+def get_range_bounds(x, total_bounds, resolution, log2_hashmap_size):
+    '''
+    x: 1D coordinate: B x 1
+    total_bounds: min and max for x
+    resolution: number of ranges in the total bounds
+    '''
+    bound_min, bound_max = total_bounds
+
+    keep_mask = x==torch.max(torch.min(x, bound_max), bound_min)
+    if not torch.all(x <= bound_max) or not torch.all(x >= bound_min):
+        x = torch.clamp(x, min=bound_min, max=bound_max)
+
+    range_size = (bound_max - bound_min) / resolution
+
+    lower_bound_idx = torch.floor((x-bound_min)/range_size).int()
+    lower_bound = lower_bound_idx*range_size + bound_min
+    upper_bound = lower_bound + torch.Tensor([1.0])*range_size
+
+    bound_indices = lower_bound_idx.unsqueeze(1) + torch.tensor([[[i] for i in [0, 1]]])
+    hashed_bound_indices = hash(bound_indices, log2_hashmap_size)
+
+    return lower_bound, upper_bound, hashed_bound_indices, keep_mask
 
 if __name__=="__main__":
     with open("data/nerf_synthetic/chair/transforms_train.json", "r") as f:

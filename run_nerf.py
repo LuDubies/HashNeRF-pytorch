@@ -176,7 +176,11 @@ def create_nerf(args):
     embedtimes_fn = None
     if args.use_time:
         # encode time input
-        embedtimes_fn, input_ch_time = get_embedder(args.multires_time, args, input_dims=1, i=0)
+        if args.i_embed_time==0:
+            print("Positional encoding for time input selected")
+        elif args.i_embed_time==1:
+            print(f"Hash encoding for time input selected")
+        embedtimes_fn, input_ch_time = get_embedder(args.multires_time, args, input_dims=1, i=args.i_embed_time)
 
     output_ch = 5 if args.N_importance > 0 else 4
     skips = [4]
@@ -527,8 +531,6 @@ def config_parser():
                         help='log2 of max freq for positional encoding (3D location)')
     parser.add_argument("--multires_views", type=int, default=4,
                         help='log2 of max freq for positional encoding (2D direction)')
-    parser.add_argument("--multires_time", type=int, default=4,
-                        help='log2 of max freq for time encoding (1D timestep)')
     parser.add_argument("--raw_noise_std", type=float, default=0.,
                         help='std dev of noise added to regularize sigma_a output, 1e0 recommended')
 
@@ -580,6 +582,10 @@ def config_parser():
     ## neaf flags
     parser.add_argument("--time_interval", type=float, default=0.1,
                         help='time interval (in s) represented by range [0, 1]')
+    parser.add_argument("--multires_time", type=int, default=4,
+                        help='log2 of max freq for time encoding (1D timestep)')
+    parser.add_argument("--i_embed_time", type=int, default=0,
+                        help="encoding for time input. 0=positional, 1=hash")
     parser.add_argument("--speed_of_sound", type=float, default=343.,
                         help='speed of sound used for neaf')
     parser.add_argument("--neaf_timesteps", type=int, default=100,
@@ -647,12 +653,13 @@ def train():
         args.expname += "_sphereVIEW"
     elif args.i_embed_views==0:
         args.expname += "_posVIEW"
-    args.expname += "_fine"+str(args.finest_res) + "_log2T"+str(args.log2_hashmap_size)
+    if args.i_embed_time==0:
+        args.expname += "_posTIME"
+    elif args.i_embed_time==1:
+        args.expname += "_hashTIME"
     args.expname += "_lr"+str(args.lrate) + "_decay"+str(args.lrate_decay)
     args.expname += "_RAdam"
-    if args.sparse_loss_weight > 0:
-        args.expname += "_sparse" + str(args.sparse_loss_weight)
-    args.expname += "_TV" + str(args.tv_loss_weight)
+
     args.expname += datetime.now().strftime('_%H_%M_%d_%m_%Y')
     expname = args.expname
     print(f"This experiment is named: {expname}")
