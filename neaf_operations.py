@@ -115,7 +115,6 @@ def build_ir_batch(states, listener_ids, reccount, recs_d, args):
         irs.append(ir)
     recs = torch.cat(recs, dim=1)
     irs = torch.cat(irs, dim=0)
-    irs = irs.cpu().numpy()
     return recs[:, :reccount, :], irs[:reccount, ...]
 
 def get_random_ir_for_listener(state, rec_count, recs_d, args):

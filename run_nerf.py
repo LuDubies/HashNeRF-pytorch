@@ -146,7 +146,7 @@ def render_recs(recs, times, chunk, render_kwargs):
     return rgb
 
 
-def render_ir(recs, timesteps, i, chunk, render_kwargs):
+def render_ir(recs, timesteps, chunk, render_kwargs, keeptensor=False):
     # need every rec at every timestep
     rec_count = recs.shape[1]
     time_vals = torch.linspace(0., 1., steps=timesteps)
@@ -154,7 +154,8 @@ def render_ir(recs, timesteps, i, chunk, render_kwargs):
     recs_repeated = torch.repeat_interleave(recs, timesteps, dim=1)  # get every rec timestep-times
     irs = render_recs(recs_repeated, time_vals, chunk, render_kwargs)
     irs = irs.reshape((rec_count, timesteps, 3))
-    irs = irs.cpu().numpy()
+    if not keeptensor:
+        irs = irs.cpu().numpy()
     return irs
 
 
@@ -707,6 +708,7 @@ def train():
     irtestdir = os.path.join(basedir, expname, 'ir_tests')
     os.makedirs(irtestdir, exist_ok=True)
     perm_test_recs, ir_gt = build_neaf_batch(listener_states, i_test, args, reccount=args.neaf_permtest_cnt, mode='ir')
+    ir_gt = ir_gt.cpu().numpy()
     gt_log_dict = save_ir(ir_gt, None, 'ir_groundt', savedir=irtestdir)
 
     # Short circuit if only rendering out from trained model
@@ -838,8 +840,17 @@ def train():
                 tqdm.write(f"[TEST] Iter: {i} Recs: 1024 Loss: {img_loss_test.item()}  PSNR: {psnr_test.item()}")
                 log_dict.update({"test_loss": img_loss_test,
                                  "test_psnr": psnr_test})
+
+                recs, target_irs = build_neaf_batch(listener_states, i_test, args, reccount=512, mode='ir')
+                predict_irs = render_ir(recs, args.neaf_timesteps, args.chunk, render_kwargs_test, keeptensor=True)
+                super_img_loss = img2mse(target_irs, predict_irs)
+                super_test_psnr = mse2psnr(super_img_loss)
+                tqdm.write(f"[SUPER TEST] Iter: {i} Recs: 512 Loss: {super_img_loss.item()}  PSNR: {super_test_psnr.item()}")
+                log_dict.update({"full_test_loss": super_img_loss,
+                                 "full_test_psnr": super_test_psnr})
+
             with torch.no_grad():
-                irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test)
+                irs = render_ir(perm_test_recs, args.neaf_timesteps, args.chunk, render_kwargs_test)
                 extra_log_dict = save_ir(irs, perm_test_recs, f"ir_{i}", irtestdir, truth=ir_gt)
                 log_dict.update(extra_log_dict)
 
