@@ -66,11 +66,11 @@ def get_embedder(multires, args, input_dims=None, i=0):
         out_dim = embedder_obj.out_dim
     elif i==1:
         if input_dims is not None and input_dims==1:
-            print("Creating TimeHashEmbedder")
+            print(f"Creating TimeHashEmbedder with {multires} levels")
             embed = TimeHashEmbedder(bounds=(torch.tensor([-1]), torch.tensor([1])),
                                      log2_hashmap_size=args.log2_hashmap_size,
                                      finest_resolution=args.finest_res,
-                                     n_levels=10)
+                                     n_levels=multires)
 
         else:
             embed = HashEmbedder(bounding_box=args.bounding_box, \
