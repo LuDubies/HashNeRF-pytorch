@@ -39,6 +39,8 @@ def cgrade_ir(ir, filename, savedir, channel=1):
 def raw_ir(ir, filename, savedir):
     filename += '.png'
     filename = 'raw_' + filename
+    # flip ir so ir sorting matches matplotlib output!!
+    ir = np.flip(ir, axis=0)
     pil_image = Im.fromarray(np.uint8(ir * 255))
     pil_image.save(path.join(savedir, filename))
     return {"raw_ir": wandb.Image(path.join(savedir, filename))}

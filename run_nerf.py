@@ -594,6 +594,8 @@ def config_parser():
                         help="ray file for neaf gt")
     parser.add_argument("--angle_exp", type=float, default=10,
                         help="exponent applied to dot product when calculating receivers")
+    parser.add_argument("--neaf_permtest_cnt", type=int, default=100,
+                        help="number of permanent test listeners whose irs are visualized")
 
     # logging/saving options
     parser.add_argument("--i_print",   type=int, default=100,
@@ -704,7 +706,7 @@ def train():
     gt_log_dict = None
     irtestdir = os.path.join(basedir, expname, 'ir_tests')
     os.makedirs(irtestdir, exist_ok=True)
-    perm_test_recs, ir_gt = build_neaf_batch(listener_states, i_test, args, reccount=50, mode='ir')
+    perm_test_recs, ir_gt = build_neaf_batch(listener_states, i_test, args, reccount=args.neaf_permtest_cnt, mode='ir')
     gt_log_dict = save_ir(ir_gt, None, 'ir_groundt', savedir=irtestdir)
 
     # Short circuit if only rendering out from trained model
@@ -822,6 +824,7 @@ def train():
                     'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                 }, path)
+            print('Saved checkpoints at', path)
             print('Saved checkpoints at', path)
 
         if i%args.i_testset==0 and i > 0:
