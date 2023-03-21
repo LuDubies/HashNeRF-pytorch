@@ -6,11 +6,22 @@ import wandb
 from os import path
 from PIL import Image as Im
 
-def array_to_picture(npa, fullpath):
-    scaled = np.uint8(255*npa)
-    plt.imshow(scaled, cmap='hot', vmin=0, vmax=255)
-    plt.savefig(fullpath)
-    return fullpath
+def array_to_figure(npa, title, xlabel, ylabel, cmap=None, fullpath=None):
+    fig, ax = plt.subplots(1, 1, dpi=400, figsize=(10, 5))
+    ax.set(title=title,
+           xlabel=xlabel,
+           ylabel=ylabel)
+    if npa.ndim == 2:
+        pc = ax.pcolormesh(npa, vmin=0, vmax=1, cmap=cmap)
+        if cmap is not None:
+            fig.colorbar(pc, shrink=0.6, ax=ax, location='right')
+    elif npa.ndim == 3:
+        ax.imshow(npa, vmin=0, vmax=1)
+    else:
+        print(f"Error creating figure. Invalid shaped array with dim {npa.ndim}.")
+    if fullpath:
+        plt.savefig(fullpath)
+    return wandb.Image(fig)
 
 
 def save_ir(irs, recs, filename, savedir, truth=None):
@@ -21,13 +32,12 @@ def save_ir(irs, recs, filename, savedir, truth=None):
     return log_dict
 
 def cgrade_ir(ir, filename, savedir, channel=1):
-    ir = np.uint8(255*ir[:, :, channel])
-    plt.imshow(ir, cmap='hot', vmin=0, vmax=255)
-    plt.savefig(path.join(savedir, filename))
-
-    return {"ir": wandb.Image(path.join(savedir, filename))}
+    filename += '.pdf'
+    f = array_to_figure(ir[:, :, channel], 'ground truth impulse responses', 'timestep', 'listener_id', cmap='hot', fullpath=path.join(savedir, filename))
+    return {"ir": f}
 
 def raw_ir(ir, filename, savedir):
+    filename += '.png'
     filename = 'raw_' + filename
     pil_image = Im.fromarray(np.uint8(ir * 255))
     pil_image.save(path.join(savedir, filename))
@@ -41,45 +51,30 @@ def error_plot(target, prediction, filename, savedir, channel=1):
     # absolute error
     errorfn = path.join(savedir, 'error_' + filename)
     error = np.abs(target - prediction)
-    errorpic = np.uint8(255*error)
-    plt.imshow(errorpic, cmap='hot', vmin=0, vmax=255)
-    plt.savefig(errorfn)
+    errorfig = array_to_figure(error, 'absolute error between target and prediction', 'timestep', 'listener_id', cmap='hot', fullpath=errorfn)
 
     # both in one image, layered in red and green channel
     layerfn = path.join(savedir, 'layer_' + filename)
     layer = np.stack((target, prediction, np.zeros_like(target)), -1)
-    layerpic = np.uint8(255*layer)
-    plt.imshow(layerpic, vmin=0, vmax=255)
-    plt.savefig(layerfn)
-    mse2psnr = lambda x: -10. * np.log(x) / np.log(10.)
-
-    # shifting prediction left
-    shifts = range(1, 5)
-    shiftdict = dict()
-    for s in shifts:
-        # shift prediction left to see if we match better
-        sprediction = np.concatenate((prediction[:, :-s], np.zeros_like(prediction)[:, :s]), axis=1)
-        serror = np.abs(target - sprediction)
-        shiftname = array_to_picture(serror, path.join(savedir, f"shift_{s}_error_" + filename))
-        shiftdict.update({f"serror_{s}": wandb.Image(shiftname)})
+    layerfig = array_to_figure(layer, 'target (red) and prediction (green)', 'timestep', 'listerner_id', fullpath=layerfn)
 
     # argmax diff calc
     argmaxdiff = np.argmax(target, axis=1) - np.argmax(prediction, axis=1)
     mean_amd = np.mean(argmaxdiff)
 
+    mse2psnr = lambda x: -10. * np.log(x) / np.log(10.)
     # mask error for ground truth positive (gtp) and ground truth zero (gtz) pixels
     mask = np.greater(target, 0)
     fperr = np.mean((error * mask) ** 2)
     fzerr = np.mean((error * np.invert(mask)) ** 2)
-    to_log = {"error": wandb.Image(errorfn),
-              "layered": wandb.Image(layerfn),
+    to_log = {"error": errorfig,
+              "layered": layerfig,
               "gtp_error": fperr,
               "gtp_psnr": mse2psnr(fperr),
               "gtz_error": fzerr,
               "gtz_psnr": mse2psnr(fzerr),
               "argmaxdiff_mean": mean_amd,
               "argmaxdiff": argmaxdiff}
-    to_log.update(shiftdict)
 
     return to_log
 

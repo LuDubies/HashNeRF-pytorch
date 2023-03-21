@@ -705,7 +705,7 @@ def train():
     irtestdir = os.path.join(basedir, expname, 'ir_tests')
     os.makedirs(irtestdir, exist_ok=True)
     perm_test_recs, ir_gt = build_neaf_batch(listener_states, i_test, args, reccount=50, mode='ir')
-    gt_log_dict = save_ir(ir_gt, None, 'ir_groundt.png', savedir=irtestdir)
+    gt_log_dict = save_ir(ir_gt, None, 'ir_groundt', savedir=irtestdir)
 
     # Short circuit if only rendering out from trained model
     if args.render_only:
@@ -837,7 +837,7 @@ def train():
                                  "test_psnr": psnr_test})
             with torch.no_grad():
                 irs = render_ir(perm_test_recs, args.neaf_timesteps, i, args.chunk, render_kwargs_test)
-                extra_log_dict = save_ir(irs, perm_test_recs, f"ir_{i}.png", irtestdir, truth=ir_gt)
+                extra_log_dict = save_ir(irs, perm_test_recs, f"ir_{i}", irtestdir, truth=ir_gt)
                 log_dict.update(extra_log_dict)
 
         # Manual alpha logging for DEBUGGING

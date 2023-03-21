@@ -15,7 +15,7 @@ N_rand = 2048
 
 time_interval = 0.05
 multires_time = 6
-i_embed_time = 1
+i_embed_time = 0
 angle_exp = 1
 
 i_testset = 250
