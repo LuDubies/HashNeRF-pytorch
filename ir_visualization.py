@@ -15,8 +15,7 @@ def array_to_picture(npa, fullpath):
 
 def save_ir(irs, recs, filename, savedir, truth=None):
     log_dict = cgrade_ir(irs, filename, savedir)
-    if recs is None:
-        log_dict.update(raw_ir(irs, filename, savedir))
+    log_dict.update(raw_ir(irs, filename, savedir))
     if truth is not None:
         log_dict.update(error_plot(truth, irs, filename, savedir))
     return log_dict
