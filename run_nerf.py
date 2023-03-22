@@ -789,7 +789,8 @@ def train():
             if i>1000:
                 args.tv_loss_weight = 0.0
 
-        log_dict = {"loss": loss}
+        log_dict = {"loss": loss,
+                    "psnr": psnr}
 
         loss.backward()
         # pdb.set_trace()
