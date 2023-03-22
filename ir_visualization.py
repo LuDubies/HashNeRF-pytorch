@@ -16,6 +16,7 @@ def array_to_figure(npa, title, xlabel, ylabel, cmap=None, fullpath=None):
         if cmap is not None:
             fig.colorbar(pc, shrink=0.6, ax=ax, location='right')
     elif npa.ndim == 3:
+        npa = np.flip(npa, axis=0)  # flip to match with figures
         ax.imshow(npa, vmin=0, vmax=1)
     else:
         print(f"Error creating figure. Invalid shaped array with dim {npa.ndim}.")
