@@ -27,7 +27,7 @@ from load_scannet import load_scannet_data
 from load_LINEMOD import load_LINEMOD_data
 from neaf_operations import load_neaf_data, build_neaf_batch
 from ir_visualization import save_ir
-
+from ir_application import apply_ir
 import wandb
 
 
@@ -486,6 +486,8 @@ def config_parser():
                         help='where to store ckpts and logs')
     parser.add_argument("--datadir", type=str, default='./data/llff/fern',
                         help='input data directory')
+    parser.add_argument("--sounddir", type=str, default='./sounds',
+                        help='sound sample directory')
 
     # training options
     parser.add_argument("--netdepth", type=int, default=8,
@@ -597,6 +599,8 @@ def config_parser():
                         help="exponent applied to dot product when calculating receivers")
     parser.add_argument("--neaf_permtest_cnt", type=int, default=100,
                         help="number of permanent test listeners whose irs are visualized")
+    parser.add_argument("--auralize", action='store_true',
+                        help="auralize NeAF output")
 
     # logging/saving options
     parser.add_argument("--i_print",   type=int, default=100,
@@ -648,6 +652,7 @@ def train():
 
     # Create log dir and copy the config file
     basedir = args.basedir
+    sounddir = args.sounddir
     if args.i_embed==1:
         args.expname += "_hashXYZ"
     elif args.i_embed==0:
@@ -711,9 +716,17 @@ def train():
     ir_gt = ir_gt.cpu().numpy()
     gt_log_dict = save_ir(ir_gt, None, 'ir_groundt', savedir=irtestdir)
 
+    soutdir = os.path.join(basedir, expname, 'auralization')
+    os.makedirs(soutdir, exist_ok=True)
+    if args.auralize:
+        for l in range(ir_gt.shape[0]):
+            apply_ir(os.path.join(sounddir, 'ppss.wav'), os.path.join(soutdir, f'gt_aural_{l}.wav'), args, ir=ir_gt[l, :, :])
+        gt_log_dict.update({'gt_audio': wandb.Audio(os.path.join(soutdir, f'gt_aural_0.wav')),
+                            'original_audio': wandb.Audio(os.path.join(sounddir, 'ppss.wav'))})
+
+
     # Short circuit if only rendering out from trained model
     if args.render_only:
-        # TODO for neaf
         print('RENDER ONLY')
         quit()
 
@@ -855,10 +868,15 @@ def train():
                 extra_log_dict = save_ir(irs, perm_test_recs, f"ir_{i}", irtestdir, truth=ir_gt)
                 log_dict.update(extra_log_dict)
 
+                if args.auralize:
+                    for l in range(irs.shape[0]):
+                        apply_ir(os.path.join(sounddir, 'ppss.wav'), os.path.join(soutdir, f'aural_{l}_step_{i}.wav'), args,
+                                 ir=irs[l, :, :])
+                    log_dict.update({'audio': wandb.Audio(os.path.join(soutdir, f'aural_0_step_{i}.wav'))})
+
         # Manual alpha logging for DEBUGGING
         if i%10==0 and source_pos is not None:
             # get alpha at source position if available and log to wandb
-            # TODO "manually" query model for alpha
             # time and direction values are irrelevant for the alpha, just ask the model directly :D
             # need query fn, set of points, no or pseudo viewdir and pttimes, ref to model
 
@@ -878,6 +896,8 @@ def train():
         if args.use_wandb:
             if gt_log_dict is not None:
                 log_dict.update({'ir_gt': gt_log_dict['ir']})
+                log_dict.update({'original_audio': gt_log_dict['original_audio']})
+                log_dict.update({'gt_audio': gt_log_dict['gt_audio']})
                 gt_log_dict = None
             wandb.log(log_dict)
 
